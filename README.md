@@ -2,7 +2,7 @@
 
 QuickFixTranscription is a local desktop app for batch transcription of sensitive audio and video recordings.
 
-The app uses local FFmpeg extraction plus a local `whisper.cpp` executable and local Whisper model file. Recording processing is local-only: media, extracted audio, transcripts, filenames, diarization data, language-detection data, and processing results must not be sent to external services.
+The app uses local FFmpeg extraction plus a local `whisper.cpp` executable and local Whisper model file. Recording processing is local-only: media, extracted audio, transcripts, filenames, diarization data, language-detection data, and processing results will not be sent to external services.
 
 ## Features
 
