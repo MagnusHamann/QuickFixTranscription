@@ -91,8 +91,7 @@ Prohibited behavior:
 - OpenAI API calls
 - cloud fallback behavior
 
-Whisper is still AI, but this app must use only local/offline inference. Product
-copy should describe this as local AI, offline transcription, and no external
+Whisper must use only local/offline inference. Offline transcription, and no external
 data sharing.
 
 ## Dependency Handling
