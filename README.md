@@ -83,20 +83,6 @@ models/
 
 You can also choose the executable and model manually in the app.
 
-## GitHub Upload
-
-This folder is intended to be uploaded to GitHub as source code only.
-
-Do not upload:
-
-- `.venv/`
-- `.tools/`
-- `models/*.bin`
-- `models/*.gguf`
-- generated `QuickFixTranscription/` output folders
-
-After someone clones/downloads the repository, they can run the app by clicking the platform launcher. The launcher runs setup if needed and downloads large runtime assets locally.
-
 ## Install And Run
 
 ### Windows
