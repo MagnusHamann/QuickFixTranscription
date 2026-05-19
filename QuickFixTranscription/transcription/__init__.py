@@ -1,2 +1,0 @@
-"""QuickFixTranscription local processing package."""
-

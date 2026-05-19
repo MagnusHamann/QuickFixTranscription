@@ -1,1 +1,0 @@
-"""FFmpeg integration package."""
