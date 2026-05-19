@@ -1,0 +1,292 @@
+# QuickFixTranscription Specification
+
+## Purpose
+
+Build and maintain a local-only desktop transcription app for sensitive data.
+All file processing must stay on the user's computer.
+
+The app may use local tools, local Python packages, local binaries, and local
+model files, but it must never send, upload, sync, report, fetch, check, or
+transmit any information outside the computer.
+
+If a feature cannot run fully offline without any network connection or
+external data transfer, it must not be implemented in QuickFixTranscription.
+
+## Processing Privacy Rule
+
+QuickFixTranscription must never send, upload, sync, report, fetch, check, or
+transmit user media, media-derived data, transcript text, diarization data,
+language-detection data, filenames, or processing results outside the computer.
+
+This includes:
+
+- no cloud transcription
+- no OpenAI API
+- no hosted Whisper services
+- no telemetry
+- no analytics
+- no crash reporting uploads
+- no automatic update checks
+- no implicit model downloads while processing recordings
+- no remote content in the UI
+- no online language detection
+- no external diarization services
+- no background network requests while processing recordings
+
+All transcription processing must work using local tools and local model files.
+The app must not use cloud fallback behavior if local processing components are
+missing.
+
+The app may use network access only during an explicit setup or update phase to
+download general dependencies such as Python, FFmpeg, local Whisper binaries,
+Python wheels, or model files. That setup/update phase must be clearly separate
+from recording processing and must never transmit user media or media-derived
+data.
+
+## Product Goals
+
+- Bulk-transcribe files and folders through a drag-and-drop UI.
+- Use a UI pattern inspired by the existing QuickFixEditing app.
+- Create a sibling output folder named `QuickFixTranscription` beside each
+  source file or source folder.
+- Export transcripts as `.rtf`.
+- Preserve original source files untouched.
+- Support language selection with an `Auto-detect` option and manual override.
+- Provide a checkbox for `Upgrade to simple Jeffersonian transcription`.
+- Keep a raw transcript artifact internally for traceability.
+- Generate a separate Jeffersonian-formatted output when that checkbox is
+  enabled.
+
+## Local-Only Architecture
+
+Use a modular pipeline:
+
+- `ingest` for drag-and-drop, file validation, time-range validation, and job
+  creation
+- `media` or `ffmpeg` for local audio extraction, segment selection, conversion,
+  metadata, and duration checks
+- `engine` for local transcription
+- `diarization` for local speaker separation if available
+- `formatter/jeffersonian` for overlap, silence, and speaker formatting
+- `exporter/rtf` for `.rtf` output
+- `ui` for the desktop interface
+
+Keep the transcription engine behind an interface so the backend can be swapped
+later without changing the UI.
+
+## Engine Policy
+
+Prefer a local Whisper implementation such as `whisper.cpp`.
+
+Acceptable behavior:
+
+- local Whisper model inference
+- local model loading from bundled files or user-selected paths
+- local CPU or GPU execution
+
+Prohibited behavior:
+
+- remote STT APIs
+- hosted Whisper services
+- OpenAI API calls
+- cloud fallback behavior
+
+Whisper is still AI, but this app must use only local/offline inference. Product
+copy should describe this as local AI, offline transcription, and no external
+data sharing.
+
+## Dependency Handling
+
+QuickFixTranscription may download and install general dependencies during an
+explicit setup or update phase. This is allowed only for app preparation, not for
+recording processing.
+
+On launch, the app may check for required components such as FFmpeg, Whisper
+binaries, model files, and Python packages. If anything is missing, it may offer
+an explicit setup flow.
+
+Allowed dependency behavior:
+
+- use dependencies bundled with the app installer
+- use dependencies already present on the computer
+- let the user select a local folder containing offline installers, binaries,
+  wheels, or model files
+- run an explicit offline repair/setup flow using only local files
+- run an explicit online setup/update flow for general app dependencies
+- download pinned dependencies from trusted sources during setup/update
+- provide a clear list of missing local components
+
+Prohibited dependency behavior:
+
+- downloading dependencies while a recording is being processed
+- uploading media, media-derived data, transcripts, or filenames during setup
+- sending diagnostic data that includes media content or transcript content
+- package manager calls from the processing pipeline
+- silent fallback to cloud services when local components are missing
+
+Dependency setup should use pinned versions, trusted official sources, and
+checksums or signatures where practical. After setup, transcription must run
+locally without requiring network access.
+
+## FFmpeg Policy
+
+QuickFixTranscription may use a local FFmpeg binary for media decoding, audio
+extraction, format conversion, duration checks, and temporary WAV creation.
+
+FFmpeg must run locally only. It must never upload, stream, fetch, or transmit
+media. The app must not use remote URLs as FFmpeg inputs.
+
+Temporary converted audio files must be written locally and deleted after
+processing unless the user explicitly chooses to keep them.
+
+## Segment Selection
+
+QuickFixTranscription must support optional partial-file transcription.
+
+Users may define a start time and finish time before running transcription. The
+app should use the local FFmpeg binary to extract only that time range into a
+temporary local audio file, then pass that temporary file to the local
+transcription engine.
+
+Preferred behavior:
+
+- if no start or finish time is provided, transcribe the whole file
+- if only start time is provided, transcribe from start time to the end of file
+- if only finish time is provided, transcribe from the beginning to finish time
+- validate that finish time is after start time
+- display useful validation errors for invalid time ranges
+- preserve original media timestamps internally when a segment is transcribed
+- delete temporary segment files after processing unless explicitly retained by
+  the user
+
+FFmpeg must be invoked only on local file paths, never URLs or network streams.
+
+## Language Handling
+
+Use a real language-code library for dropdown values and display names.
+
+Recommended local packages:
+
+- `langcodes` for language tags and normalized names
+- `pycountry` as an ISO language data fallback
+- `Babel` only if locale-aware display names are useful in the UI
+
+The dropdown should:
+
+- put `Auto-detect` first
+- include only languages supported by the chosen local Whisper model
+- pass the selected language as a local engine hint
+- never call online language services
+
+## Jeffersonian Mode
+
+When `Upgrade to simple Jeffersonian transcription` is enabled, run a local
+post-processing formatter after raw transcription.
+
+Output rules:
+
+- write one line per speaker
+- label speakers `A`, `B`, `C`, and so on
+- mark overlapping speech with `[]`
+- mark silences in tenths of a second, such as `(0.2)`
+- preserve a separate raw transcript artifact for traceability
+
+The formatter should be inspired by GailBot's architecture, where speech
+recognition is followed by post-processing modules for conversational features.
+Do not copy any networked STT behavior from GailBot.
+
+## Speaker And Overlap Handling
+
+Speaker assignment and overlap detection are separate from speech recognition.
+Whisper alone does not reliably provide speaker labels or true overlap
+detection.
+
+Preferred behavior:
+
+- support channel-based speaker separation when the source has separate channels
+- keep diarization as a local-only module that can be inserted later
+- use word-level or segment-level timestamps where available
+- mark Jeffersonian speaker labels or overlaps as approximate if no reliable
+  local diarization or channel timing exists
+- never use external speaker-labeling, diarization, or alignment services
+
+## Output Rules
+
+Write outputs only inside a sibling folder named `QuickFixTranscription`.
+
+Do not overwrite original source files.
+
+Avoid overwriting previous transcripts. Use safe output names such as:
+
+- `<source_name>_transcript.rtf`
+- `<source_name>_jeffersonian.rtf`
+- `<source_name>_transcript_YYYYMMDD_HHMMSS.rtf` when a name already exists
+
+RTF export must escape transcript text safely so braces, backslashes, and other
+special characters cannot corrupt the file.
+
+## Security And Privacy Rules
+
+- no telemetry containing user media, transcripts, filenames, or media-derived
+  data
+- no analytics containing user media, transcripts, filenames, or media-derived
+  data
+- no crash reporting uploads
+- no automatic update checks
+- no remote content loading
+- no API keys
+- no dependency downloads while processing recordings
+- no network processing of recordings
+- do not log transcript text
+- do not log audio-derived content
+- do not upload or share media
+- delete temporary audio files after processing unless explicitly retained by the
+  user
+- keep generated outputs inside `QuickFixTranscription`
+
+Logs may include job status, local file names, local paths, durations, and error
+messages, but must never include transcript content or audio payloads.
+
+## Testing Expectations
+
+Add or update tests for:
+
+- local job creation
+- supported file discovery
+- output folder creation
+- safe output naming
+- `.rtf` export and RTF escaping
+- segment start and finish validation
+- local FFmpeg command construction for segment extraction
+- Jeffersonian formatting
+- overlap and silence markup
+- temp file cleanup after success and failure
+- missing-dependency launch behavior
+- processing-mode no-network assumptions
+
+Any dependency that attempts a network call during recording processing must be
+removed or disabled.
+
+## Implementation Approach
+
+1. Inspect the existing repository structure.
+2. Identify the app entry point and UI framework.
+3. Reuse the QuickFixEditing drag-and-drop pattern where useful.
+4. Add the local transcription pipeline.
+5. Add local FFmpeg media extraction and segment selection.
+6. Add the language dropdown.
+7. Add the raw transcript representation.
+8. Add the Jeffersonian formatter.
+9. Add the RTF exporter.
+10. Add tests.
+11. Run the relevant test suite.
+12. Report changed files and any remaining gaps.
+
+## Working Style
+
+- Make the smallest set of changes that satisfies the goal.
+- Prefer readable, maintainable code.
+- Keep network-prohibited behavior as an architectural constraint.
+- Avoid introducing dependencies unless they are necessary for local operation.
+- If a requested feature cannot be done fully offline, say so before
+  implementing any fallback.

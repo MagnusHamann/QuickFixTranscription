@@ -1,0 +1,118 @@
+# QuickFixTranscription
+
+QuickFixTranscription is a local desktop app for batch transcription of sensitive audio and video recordings.
+
+The app uses local FFmpeg extraction plus a local `whisper.cpp` executable and local Whisper model file. Recording processing is local-only: media, extracted audio, transcripts, filenames, diarization data, language-detection data, and processing results must not be sent to external services.
+
+## Features
+
+- Drag-and-drop audio/video files or folders.
+- Batch process common media files including `.mp4`, `.mov`, `.mkv`, `.avi`, `.mp3`, `.wav`, `.m4a`, and `.flac`.
+- Optional start and finish time selection using local FFmpeg segment extraction.
+- Language dropdown with `Auto-detect` and common Whisper language options.
+- Local `whisper.cpp` executable and local model path selection.
+- `.rtf` transcript export into `QuickFixTranscription` beside each source file.
+- Optional simple Jeffersonian `.rtf` output with speaker lines, overlap brackets, and timed silences.
+
+## Processing Privacy Rule
+
+QuickFixTranscription may use network access during explicit setup/update to install general dependencies, but recording processing itself must remain local.
+
+The app must not upload or transmit:
+
+- media files
+- extracted audio
+- transcript text
+- filenames
+- diarization data
+- language-detection data
+- processing results
+
+No cloud transcription, hosted Whisper service, OpenAI API, remote diarization, or cloud fallback is allowed.
+
+## Dependencies
+
+The bootstrap scripts install/check:
+
+- Python
+- FFmpeg/FFprobe
+- Python package dependencies from `requirements.txt`
+
+You must also provide a local `whisper.cpp` executable and local Whisper model file. The app checks common local locations such as:
+
+```text
+.tools/whisper/
+.tools/whisper/bin/
+.tools/whisper/build/bin/
+.tools/whisper/build/bin/Release/
+models/
+.tools/models/
+.tools/whisper/models/
+```
+
+You can also choose the executable and model manually in the app.
+
+## Install And Run
+
+### Windows
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\agent-bootstrap.ps1 -Yes
+.\Run QuickFixTranscription Windows.cmd
+```
+
+### Linux/macOS
+
+```sh
+chmod +x ./agent-bootstrap.sh "./Run QuickFixTranscription Linux.sh" "./Run QuickFixTranscription macOS.command"
+./agent-bootstrap.sh --yes
+./"Run QuickFixTranscription Linux.sh"
+```
+
+On macOS, after `chmod +x`, you can also double-click:
+
+```text
+Run QuickFixTranscription macOS.command
+```
+
+## Manual Python Run
+
+```sh
+python3 -m venv .venv
+. ./.venv/bin/activate
+python -m pip install -r requirements.txt
+python main.py
+```
+
+On Windows:
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe .\main.py
+```
+
+## Output Rules
+
+The app never overwrites original files.
+
+All outputs are saved into a subfolder inside the input file's parent folder:
+
+```text
+QuickFixTranscription
+```
+
+If a filename already exists, the app adds a number instead of overwriting it.
+
+## Project Structure
+
+```text
+main.py
+ui/
+transcription/
+ffmpeg/
+tests/
+models/
+```
+
+See [QUICKFIXTRANSCRIPTION_SPEC.md](QUICKFIXTRANSCRIPTION_SPEC.md) for the full design and security specification.
