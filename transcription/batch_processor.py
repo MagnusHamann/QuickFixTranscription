@@ -115,7 +115,10 @@ class TranscriptionBatchProcessor(QObject):
                     write_rtf(
                         jeffersonian_path,
                         f"Simple Jeffersonian transcript: {record.path.name}",
-                        format_simple_jeffersonian(jeffersonian_result),
+                        format_simple_jeffersonian(
+                            jeffersonian_result,
+                            max_text_columns=self.options.jeffersonian_line_width,
+                        ),
                         font_name="Courier New",
                         include_title=False,
                     )

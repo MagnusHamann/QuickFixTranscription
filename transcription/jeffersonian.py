@@ -166,8 +166,19 @@ def _apply_overlap_alignment(row: JeffersonianRow, current: TranscriptSegment) -
 
 
 def _wrap_text(text: str, max_columns: int = MAX_TEXT_COLUMNS) -> list[str]:
+    max_columns = max(1, int(max_columns))
     if len(text) <= max_columns:
         return [text]
+
+    leading_spaces = len(text) - len(text.lstrip(" "))
+    if leading_spaces:
+        prefix = text[:leading_spaces]
+        body = text[leading_spaces:]
+        available = max_columns - leading_spaces
+        if available < 10:
+            return [text]
+        body_lines = _wrap_text(body, available)
+        return [prefix + body_lines[0], *body_lines[1:]]
 
     lines: list[str] = []
     current = ""
@@ -191,15 +202,15 @@ def _wrap_text(text: str, max_columns: int = MAX_TEXT_COLUMNS) -> list[str]:
     return lines or [text[:max_columns]]
 
 
-def _wrap_rows(rows: list[JeffersonianRow]) -> list[JeffersonianRow]:
+def _wrap_rows(rows: list[JeffersonianRow], max_text_columns: int = MAX_TEXT_COLUMNS) -> list[JeffersonianRow]:
     wrapped: list[JeffersonianRow] = []
     for row in rows:
-        for text in _wrap_text(row.text):
+        for text in _wrap_text(row.text, max_text_columns):
             wrapped.append(JeffersonianRow(row.speaker, text, row.segment))
     return wrapped
 
 
-def format_simple_jeffersonian(result: TranscriptResult) -> list[str]:
+def format_simple_jeffersonian(result: TranscriptResult, max_text_columns: int = MAX_TEXT_COLUMNS) -> list[str]:
     """Format segments as a simple numbered Jeffersonian transcript."""
     labels: dict[str, str] = {}
     rows: list[JeffersonianRow] = []
@@ -237,4 +248,4 @@ def format_simple_jeffersonian(result: TranscriptResult) -> list[str]:
             previous_end = max(previous_end or segment.end, segment.end)
         previous_speaker = current_speaker
 
-    return _format_rows(_wrap_rows(rows))
+    return _format_rows(_wrap_rows(rows, max_text_columns))

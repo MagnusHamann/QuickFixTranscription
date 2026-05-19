@@ -16,7 +16,7 @@ from transcription.engine import parse_whisper_json
 from transcription.file_utils import collect_media_files, output_directory_for, unique_output_path
 from transcription.jeffersonian import format_simple_jeffersonian
 from transcription.media import build_audio_extract_command
-from transcription.models import TranscriptResult, TranscriptSegment, WordToken
+from transcription.models import TranscriptResult, TranscriptSegment, TranscriptionOptions, WordToken
 from transcription.model_setup import sha1_file, sha256_file
 from transcription.rtf_exporter import rtf_escape, write_rtf
 from transcription.time_utils import validate_time_range
@@ -181,6 +181,30 @@ class JeffersonianTests(unittest.TestCase):
             text = line[16:]
             self.assertLessEqual(len(text), 50)
 
+    def test_jeffersonian_line_width_can_be_customized(self) -> None:
+        result = TranscriptResult(
+            source_path=Path("sample.wav"),
+            language="en",
+            segments=[
+                TranscriptSegment(
+                    "one two three four five six seven eight",
+                    start=0.0,
+                    end=3.0,
+                    speaker="one",
+                )
+            ],
+        )
+        lines = format_simple_jeffersonian(result, max_text_columns=25)
+        self.assertEqual(
+            lines,
+            [
+                "1   A:          one two three four five",
+                "2   A:          six seven eight",
+            ],
+        )
+        for line in lines:
+            self.assertLessEqual(len(line[16:]), 25)
+
     def test_jeffersonian_strips_asr_punctuation(self) -> None:
         result = TranscriptResult(
             source_path=Path("sample.wav"),
@@ -306,6 +330,21 @@ class AcousticAnalysisTests(unittest.TestCase):
 
 
 class ModelSetupTests(unittest.TestCase):
+    def test_transcription_options_reject_out_of_range_jeffersonian_width(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            whisper = root / "whisper"
+            model = root / "model.bin"
+            whisper.write_text("exe", encoding="utf-8")
+            model.write_text("model", encoding="utf-8")
+            options = TranscriptionOptions(
+                whisper_executable=str(whisper),
+                model_path=str(model),
+                jeffersonian_line_width=10,
+            )
+            with self.assertRaises(ValueError):
+                options.validate()
+
     def test_sha1_file(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "sample.bin"

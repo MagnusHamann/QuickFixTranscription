@@ -76,6 +76,7 @@ class TranscriptionOptions:
     start_time: str = ""
     finish_time: str = ""
     jeffersonian: bool = False
+    jeffersonian_line_width: int = 50
     keep_temp_audio: bool = False
 
     def validate(self) -> tuple[int | None, int | None]:
@@ -88,6 +89,9 @@ class TranscriptionOptions:
             raise ValueError("Choose a local Whisper model file.")
         if not Path(self.model_path).expanduser().exists():
             raise ValueError("The selected Whisper model file was not found.")
+
+        if not 20 <= self.jeffersonian_line_width <= 200:
+            raise ValueError("Jeffersonian line width must be between 20 and 200 characters.")
 
         if self.transcribe_section:
             return validate_time_range(self.start_time, self.finish_time)

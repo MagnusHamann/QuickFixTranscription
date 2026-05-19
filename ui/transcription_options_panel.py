@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -52,11 +53,17 @@ class TranscriptionOptionsPanel(QWidget):
         self.finish_time.setPlaceholderText("mm:ss or hh:mm:ss")
 
         self.jeffersonian = QCheckBox("Upgrade to simple Jeffersonian transcription")
+        self.jeffersonian_line_width = QSpinBox()
+        self.jeffersonian_line_width.setRange(20, 200)
+        self.jeffersonian_line_width.setValue(50)
+        self.jeffersonian_line_width.setSingleStep(5)
+        self.jeffersonian_line_width.setSuffix(" chars")
+        self.jeffersonian_line_width.setToolTip("Maximum Jeffersonian transcript text characters per line. Default is 50.")
         self.keep_temp_audio = QCheckBox("Keep temporary WAV files")
         self.review_note = QLabel(
             "Jeffersonian output is a first-pass local annotation.\n\n"
             "Auto: verbatim words, A/B/C speaker labels when timing data exists, "
-            "line numbers, no ASR punctuation, 50-character wrapping, [overlap], silences of 0.2s+, "
+            "line numbers, no ASR punctuation, configurable line wrapping, [overlap], silences of 0.2s+, "
             "loud/quiet speech, pitch shifts, rate changes, likely prolongation, "
             "and possible cut-offs.\n\n"
             "Review manually: emphasis/underlining, exact intonation marks, breaths "
@@ -103,6 +110,11 @@ class TranscriptionOptionsPanel(QWidget):
         output_group = QGroupBox("Output")
         output_layout = QVBoxLayout(output_group)
         output_layout.addWidget(self.jeffersonian)
+        line_width_row = QHBoxLayout()
+        line_width_row.addWidget(QLabel("Jeffersonian line width"))
+        line_width_row.addWidget(self.jeffersonian_line_width)
+        line_width_row.addStretch(1)
+        output_layout.addLayout(line_width_row)
         output_layout.addWidget(self.keep_temp_audio)
         output_layout.addWidget(self.review_note)
 
@@ -132,6 +144,7 @@ class TranscriptionOptionsPanel(QWidget):
         self.model_browse.clicked.connect(self.choose_model)
         self.refresh_dependencies.clicked.connect(self.refresh_dependency_status)
         self.transcribe_section.toggled.connect(self._update_visibility)
+        self.jeffersonian.toggled.connect(self._update_visibility)
 
         for widget in (
             self.whisper_path,
@@ -142,12 +155,14 @@ class TranscriptionOptionsPanel(QWidget):
             widget.textChanged.connect(self.options_changed)
         for checkbox in (self.transcribe_section, self.jeffersonian, self.keep_temp_audio):
             checkbox.toggled.connect(self.options_changed)
+        self.jeffersonian_line_width.valueChanged.connect(lambda _value: self.options_changed.emit())
         self.language.currentIndexChanged.connect(self.options_changed)
 
     def _update_visibility(self) -> None:
         enabled = self.transcribe_section.isChecked()
         self.start_time.setEnabled(enabled)
         self.finish_time.setEnabled(enabled)
+        self.jeffersonian_line_width.setEnabled(self.jeffersonian.isChecked())
 
     def apply_dependency_status(self, status: DependencyStatus) -> None:
         if status.whisper_path and not self.whisper_path.text().strip():
@@ -187,5 +202,6 @@ class TranscriptionOptionsPanel(QWidget):
             start_time=self.start_time.text().strip(),
             finish_time=self.finish_time.text().strip(),
             jeffersonian=self.jeffersonian.isChecked(),
+            jeffersonian_line_width=self.jeffersonian_line_width.value(),
             keep_temp_audio=self.keep_temp_audio.isChecked(),
         )
