@@ -91,7 +91,8 @@ Prohibited behavior:
 - OpenAI API calls
 - cloud fallback behavior
 
-Whisper must use only local/offline inference. Offline transcription, and no external
+Whisper is still AI, but this app must use only local/offline inference. Product
+copy should describe this as local AI, offline transcription, and no external
 data sharing.
 
 ## Dependency Handling
@@ -187,7 +188,7 @@ post-processing formatter after raw transcription.
 Output rules:
 
 - write one line per speaker
-- label speakers `A`, `B`, `C`, and so on
+- label speakers `SP1`, `SP2`, `SP3`, and so on
 - strip ordinary ASR punctuation from Jeffersonian text
 - mark overlapping speech with `[]`
 - mark silences in tenths of a second, such as `(0.2)`

@@ -118,6 +118,7 @@ class TranscriptionBatchProcessor(QObject):
                         format_simple_jeffersonian(
                             jeffersonian_result,
                             max_text_columns=self.options.jeffersonian_line_width,
+                            language_code=self.options.language_code or jeffersonian_result.language,
                         ),
                         font_name="Courier New",
                         include_title=False,

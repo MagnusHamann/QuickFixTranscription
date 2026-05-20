@@ -35,7 +35,7 @@ LANGUAGE_CHOICES: tuple[tuple[str, str], ...] = (
     ("ur", "Urdu"),
     ("bn", "Bengali"),
     ("pa", "Punjabi"),
-    ("zh", "Chinese"),
+    ("zh", "Mandarin Chinese"),
     ("ja", "Japanese"),
     ("ko", "Korean"),
     ("vi", "Vietnamese"),
@@ -51,4 +51,3 @@ def language_name(code: str | None) -> str:
         return "Auto-detect"
     lookup = dict(LANGUAGE_CHOICES)
     return lookup.get(code, code)
-

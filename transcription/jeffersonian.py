@@ -6,12 +6,17 @@ from dataclasses import dataclass
 import re
 
 from transcription.models import TranscriptResult, TranscriptSegment, WordToken
+from transcription.speakers import speaker_label
 
 MIN_TIMED_SILENCE_SECONDS = 0.2
 LINE_NUMBER_WIDTH = 4
 SPEAKER_WIDTH = 12
 MAX_TEXT_COLUMNS = 50
-ASR_PUNCTUATION_PATTERN = re.compile(r'(?<!\d)\.(?!\d)|[,?!;"“”‘’…]')
+ASR_PUNCTUATION_PATTERN = re.compile(
+    r'(?<!\d)\.(?!\d)|[,?!;"\u201c\u201d\u2018\u2019\u2026\u3002\uff0c\uff1f\uff01\uff1b\uff1a\u3001]'
+)
+MANDARIN_LANGUAGE_CODES = {"zh", "zh-cn", "zh-tw", "zh-hans", "zh-hant", "cmn", "chinese", "mandarin"}
+CHINESE_TEXT_PATTERN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
 
 
 @dataclass
@@ -19,13 +24,6 @@ class JeffersonianRow:
     speaker: str
     text: str
     segment: TranscriptSegment | None = None
-
-
-def speaker_label(segment: TranscriptSegment, labels: dict[str, str]) -> str:
-    key = segment.speaker or "speaker_1"
-    if key not in labels:
-        labels[key] = chr(ord("A") + len(labels)) if len(labels) < 26 else f"S{len(labels) + 1}"
-    return labels[key]
 
 
 def _format_rows(rows: list[JeffersonianRow]) -> list[str]:
@@ -40,13 +38,45 @@ def _speaker_cell(speaker: str) -> str:
     return f"{speaker}:" if speaker else ""
 
 
-def _normalize_text(text: str) -> str:
-    return " ".join(ASR_PUNCTUATION_PATTERN.sub("", text).split())
+def _uses_mandarin_pinyin(language_code: str | None) -> bool:
+    if not language_code:
+        return False
+    return language_code.strip().lower() in MANDARIN_LANGUAGE_CODES
 
 
-def _segment_text_and_spans(segment: TranscriptSegment) -> tuple[str, list[tuple[WordToken, int, int]]]:
+def _chinese_run_to_pinyin(text: str) -> str:
+    try:
+        from pypinyin import Style, lazy_pinyin
+    except ImportError:
+        return text
+
+    return " ".join(
+        lazy_pinyin(
+            text,
+            style=Style.TONE3,
+            neutral_tone_with_five=True,
+            errors=lambda chars: list(chars),
+        )
+    )
+
+
+def _mandarin_text_to_pinyin(text: str) -> str:
+    return CHINESE_TEXT_PATTERN.sub(lambda match: _chinese_run_to_pinyin(match.group(0)), text)
+
+
+def _normalize_text(text: str, language_code: str | None = None) -> str:
+    normalized = ASR_PUNCTUATION_PATTERN.sub("", text)
+    if _uses_mandarin_pinyin(language_code):
+        normalized = _mandarin_text_to_pinyin(normalized)
+    return " ".join(normalized.split())
+
+
+def _segment_text_and_spans(
+    segment: TranscriptSegment,
+    language_code: str | None = None,
+) -> tuple[str, list[tuple[WordToken, int, int]]]:
     if not segment.words:
-        return _normalize_text(segment.text), []
+        return _normalize_text(segment.text, language_code), []
 
     parts: list[str] = []
     spans: list[tuple[WordToken, int, int]] = []
@@ -54,7 +84,7 @@ def _segment_text_and_spans(segment: TranscriptSegment) -> tuple[str, list[tuple
     previous: WordToken | None = None
 
     for word in segment.words:
-        text = _normalize_text(word.text)
+        text = _normalize_text(word.text, language_code)
         if not text:
             continue
 
@@ -92,8 +122,8 @@ def _nearest_word_boundary(text: str, index: int) -> int:
     return min(boundaries, key=lambda boundary: (abs(boundary - index), boundary))
 
 
-def _time_to_text_column(segment: TranscriptSegment, when: float) -> int:
-    text, spans = _segment_text_and_spans(segment)
+def _time_to_text_column(segment: TranscriptSegment, when: float, language_code: str | None = None) -> int:
+    text, spans = _segment_text_and_spans(segment, language_code)
     if spans:
         nearest = spans[0]
         nearest_distance = float("inf")
@@ -115,8 +145,13 @@ def _time_to_text_column(segment: TranscriptSegment, when: float) -> int:
     return _nearest_word_boundary(text, rough_index)
 
 
-def _insert_overlap_brackets(text: str, start_column: int, end_column: int | None = None) -> str:
-    clean = _normalize_text(text)
+def _insert_overlap_brackets(
+    text: str,
+    start_column: int,
+    end_column: int | None = None,
+    language_code: str | None = None,
+) -> str:
+    clean = _normalize_text(text, language_code)
     if not clean:
         return clean
 
@@ -143,22 +178,26 @@ def _find_overlap_row(rows: list[JeffersonianRow], current: TranscriptSegment, c
     return None
 
 
-def _apply_overlap_alignment(row: JeffersonianRow, current: TranscriptSegment) -> tuple[JeffersonianRow, int]:
+def _apply_overlap_alignment(
+    row: JeffersonianRow,
+    current: TranscriptSegment,
+    language_code: str | None = None,
+) -> tuple[JeffersonianRow, int]:
     previous = row.segment
     if previous is None or current.start is None:
         return row, 0
 
     overlap_start = current.start
-    start_column = _time_to_text_column(previous, overlap_start)
+    start_column = _time_to_text_column(previous, overlap_start, language_code)
     end_column = None
     if previous.end is not None and current.end is not None:
         overlap_end = min(previous.end, current.end)
-        end_column = _time_to_text_column(previous, overlap_end)
+        end_column = _time_to_text_column(previous, overlap_end, language_code)
         if end_column <= start_column:
             end_column = None
 
     if "[" not in row.text:
-        row.text = _insert_overlap_brackets(row.text, start_column, end_column)
+        row.text = _insert_overlap_brackets(row.text, start_column, end_column, language_code)
     else:
         start_column = row.text.index("[")
 
@@ -210,15 +249,20 @@ def _wrap_rows(rows: list[JeffersonianRow], max_text_columns: int = MAX_TEXT_COL
     return wrapped
 
 
-def format_simple_jeffersonian(result: TranscriptResult, max_text_columns: int = MAX_TEXT_COLUMNS) -> list[str]:
+def format_simple_jeffersonian(
+    result: TranscriptResult,
+    max_text_columns: int = MAX_TEXT_COLUMNS,
+    language_code: str | None = None,
+) -> list[str]:
     """Format segments as a simple numbered Jeffersonian transcript."""
+    effective_language = language_code or result.language
     labels: dict[str, str] = {}
     rows: list[JeffersonianRow] = []
     previous_end: float | None = None
     previous_speaker: str | None = None
 
     for segment in result.segments:
-        text, _ = _segment_text_and_spans(segment)
+        text, _ = _segment_text_and_spans(segment, effective_language)
         text = _normalize_text(text)
         if not text:
             continue
@@ -237,7 +281,7 @@ def format_simple_jeffersonian(result: TranscriptResult, max_text_columns: int =
 
         overlap_row = _find_overlap_row(rows, segment, current_speaker)
         if overlap_row:
-            _, bracket_column = _apply_overlap_alignment(overlap_row, segment)
+            _, bracket_column = _apply_overlap_alignment(overlap_row, segment, effective_language)
             text = f"{' ' * bracket_column}[{text}]"
         else:
             text = f"{pause}{text}"

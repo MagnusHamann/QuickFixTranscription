@@ -17,6 +17,9 @@ elif command -v python3 >/dev/null 2>&1; then
 fi
 
 if [ -n "$PYTHON" ]; then
+    if [ -x ./.venv/bin/python ]; then
+        "$PYTHON" -m pip install -r requirements.txt || echo "Python package setup did not complete. The app may be missing optional local features."
+    fi
     "$PYTHON" -m transcription.model_setup --yes || echo "Default Whisper model setup did not complete. You can still choose a local model in the app."
     exec "$PYTHON" ./main.py "$@"
 fi

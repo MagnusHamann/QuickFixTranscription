@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPlainTextEdit,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -60,17 +61,21 @@ class TranscriptionOptionsPanel(QWidget):
         self.jeffersonian_line_width.setSuffix(" chars")
         self.jeffersonian_line_width.setToolTip("Maximum Jeffersonian transcript text characters per line. Default is 50.")
         self.keep_temp_audio = QCheckBox("Keep temporary WAV files")
-        self.review_note = QLabel(
+        self.review_note = QPlainTextEdit()
+        self.review_note.setPlainText(
             "Jeffersonian output is a first-pass local annotation.\n\n"
-            "Auto: verbatim words, A/B/C speaker labels when timing data exists, "
+            "Auto: verbatim words, SP1/SP2/SP3 speaker labels, "
             "line numbers, no ASR punctuation, configurable line wrapping, [overlap], silences of 0.2s+, "
             "loud/quiet speech, pitch shifts, rate changes, likely prolongation, "
-            "and possible cut-offs.\n\n"
+            "possible cut-offs, and Pinyin rendering for Mandarin Chinese Jeffersonian output.\n\n"
             "Review manually: emphasis/underlining, exact intonation marks, breaths "
             "(.hhh/hhh), laughter and smiley/shaky voice, uncertain words, analyst "
             "comments, and any speaker or overlap errors."
         )
-        self.review_note.setWordWrap(True)
+        self.review_note.setReadOnly(True)
+        self.review_note.setMinimumHeight(110)
+        self.review_note.setMaximumHeight(150)
+        self.review_note.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.review_note.setObjectName("ReviewNote")
 
         self.refresh_dependencies = QPushButton("Refresh dependency check")
@@ -129,7 +134,7 @@ class TranscriptionOptionsPanel(QWidget):
 
         self.setStyleSheet(
             """
-            QLabel#ReviewNote {
+            QPlainTextEdit#ReviewNote {
                 background: #f6f8fb;
                 border: 1px solid #d5dbe5;
                 border-radius: 6px;

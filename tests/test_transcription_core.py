@@ -5,20 +5,24 @@ from __future__ import annotations
 import json
 import math
 import struct
+import sys
 import tempfile
+import types
 import unittest
 import wave
 from pathlib import Path
+from unittest.mock import patch
 
 from transcription.acoustic_analysis import apply_local_acoustic_annotations
 from transcription.acoustic_analysis import _merge_wrapped_stretches
 from transcription.engine import parse_whisper_json
 from transcription.file_utils import collect_media_files, output_directory_for, unique_output_path
+from transcription.languages import LANGUAGE_CHOICES
 from transcription.jeffersonian import format_simple_jeffersonian
 from transcription.media import build_audio_extract_command
 from transcription.models import TranscriptResult, TranscriptSegment, TranscriptionOptions, WordToken
 from transcription.model_setup import sha1_file, sha256_file
-from transcription.rtf_exporter import rtf_escape, write_rtf
+from transcription.rtf_exporter import rtf_escape, transcript_lines, write_rtf
 from transcription.time_utils import validate_time_range
 
 
@@ -49,6 +53,13 @@ class MediaCommandTests(unittest.TestCase):
         self.assertIn("-ar", command)
         self.assertIn("16000", command)
         self.assertEqual(command[-1], "output.wav")
+
+
+class LanguageChoiceTests(unittest.TestCase):
+    def test_danish_and_mandarin_are_available_for_regular_transcription(self) -> None:
+        choices = dict(LANGUAGE_CHOICES)
+        self.assertEqual(choices["da"], "Danish")
+        self.assertEqual(choices["zh"], "Mandarin Chinese")
 
 
 class OutputPathTests(unittest.TestCase):
@@ -96,10 +107,10 @@ class JeffersonianTests(unittest.TestCase):
         self.assertEqual(
             format_simple_jeffersonian(result),
             [
-                "1   A:          hello",
+                "1   SP1:        hello",
                 "2               (0.2)",
-                "3   B:          [again]",
-                "4   A:          [same time]",
+                "3   SP2:        [again]",
+                "4   SP1:        [same time]",
             ],
         )
 
@@ -123,8 +134,8 @@ class JeffersonianTests(unittest.TestCase):
             ],
         )
         lines = format_simple_jeffersonian(result)
-        self.assertEqual(lines[0], "1   A:          What a good idea to mark [overlapping speech]")
-        self.assertEqual(lines[1], "2   B:                                   [this type of speech]")
+        self.assertEqual(lines[0], "1   SP1:        What a good idea to mark [overlapping speech]")
+        self.assertEqual(lines[1], "2   SP2:                                 [this type of speech]")
         self.assertEqual(lines[0].index("["), lines[1].index("["))
 
     def test_inline_word_silence_is_inserted_inside_turn(self) -> None:
@@ -153,7 +164,7 @@ class JeffersonianTests(unittest.TestCase):
         )
         self.assertEqual(
             format_simple_jeffersonian(result),
-            ["1   A:          What a nice idea to mark (0.2) silence in talk"],
+            ["1   SP1:        What a nice idea to mark (0.2) silence in talk"],
         )
 
     def test_jeffersonian_lines_wrap_at_50_text_characters(self) -> None:
@@ -173,8 +184,8 @@ class JeffersonianTests(unittest.TestCase):
         self.assertEqual(
             lines,
             [
-                "1   A:          one two three four five six seven eight nine ten",
-                "2   A:          eleven twelve thirteen",
+                "1   SP1:        one two three four five six seven eight nine ten",
+                "2   SP1:        eleven twelve thirteen",
             ],
         )
         for line in lines:
@@ -198,8 +209,8 @@ class JeffersonianTests(unittest.TestCase):
         self.assertEqual(
             lines,
             [
-                "1   A:          one two three four five",
-                "2   A:          six seven eight",
+                "1   SP1:        one two three four five",
+                "2   SP1:        six seven eight",
             ],
         )
         for line in lines:
@@ -215,17 +226,90 @@ class JeffersonianTests(unittest.TestCase):
         )
         self.assertEqual(
             format_simple_jeffersonian(result),
-            ["1   A:          Hello what happened Let's see"],
+            ["1   SP1:        Hello what happened Let's see"],
         )
+
+    def test_mandarin_jeffersonian_uses_pinyin(self) -> None:
+        fake_pypinyin = types.ModuleType("pypinyin")
+        fake_pypinyin.Style = types.SimpleNamespace(TONE3="tone3")
+
+        def fake_lazy_pinyin(text: str, **_kwargs: object) -> list[str]:
+            lookup = {
+                "\u4f60": "ni3",
+                "\u597d": "hao3",
+                "\u4e16": "shi4",
+                "\u754c": "jie4",
+            }
+            return [lookup.get(char, char) for char in text]
+
+        fake_pypinyin.lazy_pinyin = fake_lazy_pinyin
+
+        result = TranscriptResult(
+            source_path=Path("sample.wav"),
+            language="zh",
+            segments=[
+                TranscriptSegment("\u4f60\u597d\uff0c\u4e16\u754c\u3002", start=0.0, end=2.0, speaker="one")
+            ],
+        )
+
+        with patch.dict(sys.modules, {"pypinyin": fake_pypinyin}):
+            self.assertEqual(
+                format_simple_jeffersonian(result),
+                ["1   SP1:        ni3 hao3 shi4 jie4"],
+            )
+
+    def test_mandarin_manual_language_override_uses_pinyin(self) -> None:
+        fake_pypinyin = types.ModuleType("pypinyin")
+        fake_pypinyin.Style = types.SimpleNamespace(TONE3="tone3")
+        fake_pypinyin.lazy_pinyin = lambda text, **_kwargs: ["ni3" if char == "\u4f60" else "hao3" for char in text]
+
+        result = TranscriptResult(
+            source_path=Path("sample.wav"),
+            language=None,
+            segments=[TranscriptSegment("\u4f60\u597d", start=0.0, end=1.0, speaker="one")],
+        )
+
+        with patch.dict(sys.modules, {"pypinyin": fake_pypinyin}):
+            self.assertEqual(
+                format_simple_jeffersonian(result, language_code="zh"),
+                ["1   SP1:        ni3 hao3"],
+            )
 
     def test_jeffersonian_rtf_can_skip_title_and_use_monospace(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "out.rtf"
-            write_rtf(path, "Ignored title", ["1   A:          hello"], font_name="Courier New", include_title=False)
+            write_rtf(path, "Ignored title", ["1   SP1:        hello"], font_name="Courier New", include_title=False)
             content = path.read_text(encoding="utf-8")
             self.assertIn("Courier New", content)
             self.assertNotIn("Ignored title", content)
-            self.assertIn("1   A:          hello", content)
+            self.assertIn("1   SP1:        hello", content)
+
+    def test_regular_transcript_lines_use_sp_speaker_labels(self) -> None:
+        result = TranscriptResult(
+            source_path=Path("sample.wav"),
+            language="en",
+            segments=[
+                TranscriptSegment("first", start=0.0, end=0.5, speaker="alpha"),
+                TranscriptSegment("second", start=0.7, end=1.0, speaker="beta"),
+                TranscriptSegment("third", start=1.2, end=1.5, speaker="alpha"),
+            ],
+        )
+        self.assertEqual(
+            transcript_lines(result),
+            [
+                "[00:00] SP1: first",
+                "[00:01] SP2: second",
+                "[00:01] SP1: third",
+            ],
+        )
+
+    def test_regular_transcript_lines_default_to_sp1_without_diarization(self) -> None:
+        result = TranscriptResult(
+            source_path=Path("sample.wav"),
+            language="en",
+            segments=[TranscriptSegment("single speaker text")],
+        )
+        self.assertEqual(transcript_lines(result), ["SP1: single speaker text"])
 
 
 class WhisperJsonTests(unittest.TestCase):

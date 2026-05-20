@@ -10,6 +10,7 @@ $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
 $bootstrap = Join-Path $root "agent-bootstrap.ps1"
 $main = Join-Path $root "main.py"
+$requirements = Join-Path $root "requirements.txt"
 $venvPython = Join-Path $root ".venv\Scripts\python.exe"
 
 function Test-LocalPython {
@@ -22,6 +23,19 @@ function Test-LocalPython {
     }
     catch {
         return $false
+    }
+}
+
+function Ensure-PythonRequirements {
+    if (-not (Test-LocalPython)) {
+        return
+    }
+    if (-not (Test-Path -LiteralPath $requirements)) {
+        return
+    }
+    & $venvPython -m pip install -r $requirements
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Python package setup did not complete. The app may be missing optional local features."
     }
 }
 
@@ -46,6 +60,7 @@ if ($SetupOnly -or -not (Test-LocalPython)) {
     }
 }
 
+Ensure-PythonRequirements
 Ensure-DefaultWhisperModel
 
 if ($SetupOnly) {

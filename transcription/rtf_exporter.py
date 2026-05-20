@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from transcription.models import TranscriptResult
+from transcription.speakers import speaker_label
 from transcription.time_utils import format_timestamp
 
 
@@ -52,12 +53,14 @@ def write_rtf(path: Path, title: str, lines: list[str], font_name: str = "Calibr
 
 def transcript_lines(result: TranscriptResult) -> list[str]:
     lines: list[str] = []
+    speaker_labels: dict[str, str] = {}
     for segment in result.segments:
         text = " ".join(segment.text.split())
         if not text:
             continue
+        labelled_text = f"{speaker_label(segment, speaker_labels)}: {text}"
         if segment.start is not None:
-            lines.append(f"[{format_timestamp(segment.start)}] {text}")
+            lines.append(f"[{format_timestamp(segment.start)}] {labelled_text}")
         else:
-            lines.append(text)
+            lines.append(labelled_text)
     return lines
