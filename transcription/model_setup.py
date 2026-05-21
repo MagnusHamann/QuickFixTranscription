@@ -12,16 +12,20 @@ import zipfile
 from pathlib import Path
 from typing import Callable
 
+from transcription.font_assets import IPA_FONT_DIR, IPA_FONT_FILE_CANDIDATES, find_ipa_font_file
+from quickfix_sibling_apps import quickfix_app_roots, quickfix_dependency_root
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-MODELS_DIR = PROJECT_ROOT / "models"
+DEPENDENCY_ROOT = quickfix_dependency_root(PROJECT_ROOT)
+MODELS_DIR = DEPENDENCY_ROOT / "models"
 DEFAULT_MODEL_NAME = "ggml-base.bin"
 DEFAULT_MODEL_PATH = MODELS_DIR / DEFAULT_MODEL_NAME
 DEFAULT_MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"
 DEFAULT_MODEL_SHA1 = "465707469ff3a37a2b9b8d8f89f2f99de7299dac"
 DEFAULT_MODEL_LABEL = "Whisper base multilingual GGML model"
 
-TOOLS_DIR = PROJECT_ROOT / ".tools"
+TOOLS_DIR = DEPENDENCY_ROOT / ".tools"
 WHISPER_DIR = TOOLS_DIR / "whisper"
 WHISPER_EXECUTABLE_NAMES = (
     "whisper-cli.exe",
@@ -34,6 +38,9 @@ WINDOWS_WHISPER_ZIP_URL = (
     f"https://github.com/ggml-org/whisper.cpp/releases/download/{WHISPER_CPP_VERSION}/{WINDOWS_WHISPER_ZIP_NAME}"
 )
 WINDOWS_WHISPER_ZIP_SHA256 = "74f973345cb52ef5ba3ec9e7e7af8e48cc8c71722d1528603b80588a11f82e3e"
+IPA_FONT_ZIP_NAME = "Charis-7.000.zip"
+IPA_FONT_ZIP_URL = "https://software.sil.org/downloads/r/charis/Charis-7.000.zip"
+IPA_FONT_LABEL = "Charis IPA-capable Unicode font"
 
 
 def sha1_file(path: Path) -> str:
@@ -54,6 +61,14 @@ def sha256_file(path: Path) -> str:
 
 def model_is_valid(path: Path = DEFAULT_MODEL_PATH) -> bool:
     return path.exists() and sha1_file(path).lower() == DEFAULT_MODEL_SHA1
+
+
+def find_valid_default_model() -> Path | None:
+    for root in quickfix_app_roots(PROJECT_ROOT):
+        candidate = root / "models" / DEFAULT_MODEL_NAME
+        if model_is_valid(candidate):
+            return candidate
+    return None
 
 
 def _download_file(url: str, destination: Path, progress: Callable[[str], None]) -> bool:
@@ -99,9 +114,10 @@ def download_default_model(progress: Callable[[str], None] = print) -> Path | No
     """
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-    if model_is_valid(DEFAULT_MODEL_PATH):
-        progress(f"Default Whisper model already available: {DEFAULT_MODEL_PATH}")
-        return DEFAULT_MODEL_PATH
+    existing_valid = find_valid_default_model()
+    if existing_valid:
+        progress(f"Default Whisper model already available: {existing_valid}")
+        return existing_valid
 
     if DEFAULT_MODEL_PATH.exists():
         existing_hash = sha1_file(DEFAULT_MODEL_PATH)
@@ -127,11 +143,13 @@ def download_default_model(progress: Callable[[str], None] = print) -> Path | No
 def _find_local_windows_whisper() -> Path | None:
     if platform.system() != "Windows":
         return None
-    if WHISPER_DIR.exists():
-        for name in WHISPER_EXECUTABLE_NAMES:
-            found = next(WHISPER_DIR.rglob(name), None)
-            if found and found.exists():
-                return found
+    for root in quickfix_app_roots(PROJECT_ROOT):
+        whisper_dir = root / ".tools" / "whisper"
+        if whisper_dir.exists():
+            for name in WHISPER_EXECUTABLE_NAMES:
+                found = next(whisper_dir.rglob(name), None)
+                if found and found.exists():
+                    return found
     return None
 
 
@@ -182,10 +200,47 @@ def download_windows_whisper_cpp(progress: Callable[[str], None] = print) -> Pat
     return None
 
 
+def download_ipa_font(progress: Callable[[str], None] = print) -> Path | None:
+    """Download the local IPA-capable font package if it is missing."""
+    existing = find_ipa_font_file()
+    if existing:
+        progress(f"IPA font already available: {existing}")
+        return existing
+
+    zip_path = TOOLS_DIR / "fonts" / IPA_FONT_ZIP_NAME
+    progress(f"Downloading {IPA_FONT_LABEL}.")
+    if not _download_file(IPA_FONT_ZIP_URL, zip_path, progress):
+        return None
+
+    try:
+        _safe_extract_zip(zip_path, IPA_FONT_DIR)
+    except Exception as exc:
+        progress(f"IPA font extraction failed: {exc}")
+        zip_path.unlink(missing_ok=True)
+        return None
+    zip_path.unlink(missing_ok=True)
+
+    font_path = find_ipa_font_file()
+    if font_path:
+        progress(f"IPA font ready: {font_path}")
+        return font_path
+
+    progress(f"IPA font package did not contain expected files: {', '.join(IPA_FONT_FILE_CANDIDATES)}")
+    return None
+
+
 def setup_runtime(progress: Callable[[str], None] = print) -> bool:
     """Download large runtime assets that are not committed to GitHub."""
     model_path = download_default_model(progress)
     whisper_path = download_windows_whisper_cpp(progress)
+    download_ipa_font(progress)
+    try:
+        from transcription.mfa_setup import setup_mfa
+
+        setup_mfa(progress)
+    except Exception as exc:
+        progress(f"MFA setup did not complete: {exc}")
+
     if platform.system() == "Windows":
         return bool(model_path and whisper_path)
     return bool(model_path)

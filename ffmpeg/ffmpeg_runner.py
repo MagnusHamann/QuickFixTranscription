@@ -9,6 +9,8 @@ import subprocess
 from pathlib import Path
 from typing import Callable
 
+from quickfix_sibling_apps import quickfix_app_roots
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -16,8 +18,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 def find_local_windows_tool(name: str) -> str | None:
     if platform.system() != "Windows":
         return None
-    candidate = PROJECT_ROOT / ".tools" / "ffmpeg" / "bin" / f"{name}.exe"
-    return str(candidate) if candidate.exists() else None
+    for root in quickfix_app_roots(PROJECT_ROOT):
+        candidate = root / ".tools" / "ffmpeg" / "bin" / f"{name}.exe"
+        if candidate.exists():
+            return str(candidate)
+    return None
 
 
 def find_ffmpeg_tools() -> tuple[str | None, str | None]:

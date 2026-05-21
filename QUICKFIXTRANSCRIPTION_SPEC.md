@@ -68,6 +68,8 @@ Use a modular pipeline:
 - `engine` for local transcription
 - `diarization` for local speaker separation if available
 - `formatter/jeffersonian` for overlap, silence, and speaker formatting
+- `mfa_alignment` for optional heavy local forced alignment and TextGrid parsing
+- `font_assets` for local IPA-capable font discovery
 - `exporter/rtf` for `.rtf` output
 - `ui` for the desktop interface
 
@@ -116,6 +118,8 @@ Allowed dependency behavior:
 - download pinned dependencies from trusted sources during setup/update
 - download a default local Whisper model during setup/update, then verify it by
   checksum before use
+- install optional heavy MFA runtime assets during setup/update so the local MFA
+  fields can be prefilled when the user enables HEAVY MFA alignment
 - provide a clear list of missing local components
 
 Prohibited dependency behavior:
@@ -189,9 +193,17 @@ Output rules:
 
 - write one line per speaker
 - label speakers `SP1`, `SP2`, `SP3`, and so on
+- preserve recognized word order, repetitions, repairs, false starts, fillers,
+  and cut-offs rather than correcting or smoothing speech
 - strip ordinary ASR punctuation from Jeffersonian text
 - mark overlapping speech with `[]`
 - mark silences in tenths of a second, such as `(0.2)`
+- mark low-confidence words as a best guess in parentheses, such as `(example)`
+- mark explicitly unclear words/sounds with no usable guess as `(     )`
+- preserve supported non-word sound conventions, including `((cough))`,
+  `((clears throat))`, `.snih.`, `((sigh))`, `.mt.`, `.dt.`, `.hhh`,
+  `hhh`, `hm`, `mm`, and `mhm`
+- render schwa-like hesitation as `eh`
 - preserve a separate raw transcript artifact for traceability
 
 Local acoustic analysis may add first-pass Jeffersonian cues when word timing is
@@ -206,6 +218,12 @@ available:
 
 These acoustic cues are heuristics and must be treated as review aids, not
 authoritative conversation-analysis annotation.
+
+MFA can refine the timing of supported non-word tokens when they are present in
+the local transcript or TextGrid, but MFA must not be presented as a fully
+reliable detector of all non-word sounds. Human review is required for
+misclassified clicks, breaths, coughs, throat clearing, sniffing, sighs, and
+uncertain words or sounds.
 
 The formatter should be inspired by GailBot's architecture, where speech
 recognition is followed by post-processing modules for conversational features.
@@ -225,6 +243,64 @@ Preferred behavior:
 - mark Jeffersonian speaker labels or overlaps as approximate if no reliable
   local diarization or channel timing exists
 - never use external speaker-labeling, diarization, or alignment services
+
+## Optional Heavy MFA Alignment
+
+Montreal Forced Aligner can be enabled as an optional heavy local alignment
+step. It must be clearly labelled as slower than ordinary transcription.
+
+Rules:
+
+- require a local MFA executable
+- require a local MFA acoustic model path
+- require a local MFA pronunciation dictionary path
+- attempt to install the MFA executable, the default UK English MFA pair
+  (`english_mfa` acoustic model plus `english_uk_mfa` dictionary), and the
+  legacy US ARPA pair (`english_us_arpa` acoustic model and dictionary) during
+  explicit setup/update
+- provide an MFA preset dropdown for additional local acoustic/dictionary
+  pairs where MFA has both assets, including UK/US English, Mandarin, French,
+  German, Spanish, Portuguese, Japanese, Korean, Russian, Ukrainian, Swedish,
+  Thai, Vietnamese, and selected CV/Epitran model pairs
+- allow a selected MFA preset to be downloaded into the shared local dependency
+  folder without uploading recordings or transcripts
+- store downloaded MFA assets in the shared `QuickFixAppDependencies` runtime
+  folder when that folder is available
+- do not download MFA models during recording processing
+- run MFA only after local Whisper transcription has produced a transcript
+- export the MFA TextGrid beside the transcript output for auditability
+- use MFA word intervals to refine downstream timing when available
+
+MFA can improve:
+
+- word boundary precision
+- silence placement
+- phone-level interval review
+- alignment of corrected transcripts back onto audio
+- evidence for prolongations and possible cut-offs
+
+MFA cannot, by itself, reliably detect overlapping speakers in mixed mono
+audio or assign speakers. In-word overlap requires speaker-separated timing
+evidence such as separate channels, reliable local diarization, or local source
+separation before alignment.
+
+## IPA Font And Phone-Tier Output
+
+The app may download the SIL Charis font package during setup. This is a local
+display/export dependency and does not process recordings.
+
+Rules:
+
+- keep the font files under `../QuickFixAppDependencies/.tools/fonts/Charis`
+- do not commit downloaded font files to GitHub
+- offer an option to use the IPA-capable font for regular RTF output
+- offer an option to use the IPA-capable font for Jeffersonian RTF output
+- clearly explain that a font does not convert words into IPA
+- offer MFA phone-tier RTF export only when heavy MFA alignment is enabled
+- label phone-tier output as dictionary/model dependent, not guaranteed IPA
+
+For Jeffersonian transcripts, warn that the IPA font is not monospaced, so
+overlap bracket alignment is strongest with the default monospace font.
 
 ## Output Rules
 

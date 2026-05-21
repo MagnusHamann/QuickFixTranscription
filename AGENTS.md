@@ -9,12 +9,13 @@ This repository contains QuickFixTranscription, a local-first desktop transcript
 - Do not add cloud transcription, hosted Whisper, OpenAI API transcription, remote diarization, online language detection, or cloud fallback behavior.
 - Do not overwrite original files.
 - Keep generated outputs inside `QuickFixTranscription` folders beside source files.
-- Do not commit `.venv/`, `.tools/`, generated media, generated transcripts, model files, logs, or caches.
+- Do not commit app-local `.venv/`, `.tools/`, generated media, generated transcripts, model files, logs, or caches.
+- Runtime dependencies belong in the sibling `QuickFixAppDependencies/` folder, not inside this app folder.
 - Keep the GitHub repository source-only; large runtime dependencies must be downloaded by setup/launch scripts or selected locally by the user.
 
 Setup/update may download general dependencies, but recording processing must remain fully local.
 
-The setup/launch scripts may download the default local Whisper model into `models/ggml-base.bin`. On Windows, setup may also download the official `whisper.cpp` release zip into `.tools/whisper`. Verify downloaded runtime assets by checksum before use. Do not add any cloud transcription fallback.
+The setup/launch scripts may download the default local Whisper model into `../QuickFixAppDependencies/models/ggml-base.bin`. On Windows, setup may also download the official `whisper.cpp` release zip into `../QuickFixAppDependencies/.tools/whisper`. Verify downloaded runtime assets by checksum before use. Do not add any cloud transcription fallback.
 
 ## Fresh Setup
 

@@ -8,8 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ffmpeg.ffmpeg_runner import PROJECT_ROOT, find_ffmpeg_tools
+from transcription.font_assets import find_ipa_font_file
+from transcription.mfa_presets import DEFAULT_MFA_PRESET_ID, mfa_preset_by_id
+from quickfix_sibling_apps import quickfix_app_roots
 
 
+DEPENDENCY_ROOT = quickfix_app_roots(PROJECT_ROOT)[0]
 WHISPER_EXECUTABLE_NAMES = (
     "whisper-cli.exe",
     "main.exe",
@@ -19,6 +23,18 @@ WHISPER_EXECUTABLE_NAMES = (
     "whisper",
 )
 MODEL_EXTENSIONS = {".bin", ".gguf"}
+MFA_EXECUTABLE_NAMES = ("mfa.exe", "mfa")
+MFA_MODEL_EXTENSIONS = {".zip"}
+MFA_MODEL_MARKERS = {"meta.yaml", "final.mdl", "phones.txt"}
+MFA_DICTIONARY_EXTENSIONS = {".dict", ".txt", ".yaml", ".yml", ".zip"}
+MFA_TOOLS_DIR = DEPENDENCY_ROOT / ".tools" / "mfa"
+MFA_ENV_DIR = MFA_TOOLS_DIR / "env"
+MFA_ROOT_DIR = MFA_TOOLS_DIR / "root"
+DEFAULT_MFA_PRESET = mfa_preset_by_id(DEFAULT_MFA_PRESET_ID)
+if DEFAULT_MFA_PRESET is None:
+    raise RuntimeError(f"Unknown default MFA preset: {DEFAULT_MFA_PRESET_ID}")
+DEFAULT_MFA_ACOUSTIC_MODEL = DEFAULT_MFA_PRESET.acoustic_model
+DEFAULT_MFA_DICTIONARY_MODEL = DEFAULT_MFA_PRESET.dictionary_model
 
 
 @dataclass(frozen=True)
@@ -27,6 +43,10 @@ class DependencyStatus:
     ffprobe_path: str | None
     whisper_path: str | None
     model_path: str | None
+    ipa_font_path: str | None = None
+    mfa_path: str | None = None
+    mfa_acoustic_model_path: str | None = None
+    mfa_dictionary_path: str | None = None
 
     @property
     def ready_for_transcription(self) -> bool:
@@ -47,13 +67,17 @@ class DependencyStatus:
 
 
 def find_whisper_executable() -> str | None:
-    search_roots = [
-        PROJECT_ROOT / ".tools" / "whisper",
-        PROJECT_ROOT / ".tools" / "whisper" / "Release",
-        PROJECT_ROOT / ".tools" / "whisper" / "bin",
-        PROJECT_ROOT / ".tools" / "whisper" / "build" / "bin",
-        PROJECT_ROOT / ".tools" / "whisper" / "build" / "bin" / "Release",
-    ]
+    search_roots = []
+    for root in quickfix_app_roots(PROJECT_ROOT):
+        search_roots.extend(
+            [
+                root / ".tools" / "whisper",
+                root / ".tools" / "whisper" / "Release",
+                root / ".tools" / "whisper" / "bin",
+                root / ".tools" / "whisper" / "build" / "bin",
+                root / ".tools" / "whisper" / "build" / "bin" / "Release",
+            ]
+        )
     if platform.system() == "Windows":
         names = WHISPER_EXECUTABLE_NAMES
     else:
@@ -86,11 +110,15 @@ def _looks_like_whisper_executable(path: Path, allowed_names: tuple[str, ...]) -
 def find_model_file() -> str | None:
     from transcription.model_setup import DEFAULT_MODEL_PATH
 
-    roots = [
-        PROJECT_ROOT / "models",
-        PROJECT_ROOT / ".tools" / "models",
-        PROJECT_ROOT / ".tools" / "whisper" / "models",
-    ]
+    roots = []
+    for root in quickfix_app_roots(PROJECT_ROOT):
+        roots.extend(
+            [
+                root / "models",
+                root / ".tools" / "models",
+                root / ".tools" / "whisper" / "models",
+            ]
+        )
     candidates: list[Path] = []
     for root in roots:
         if root.exists():
@@ -103,6 +131,123 @@ def find_model_file() -> str | None:
     return str(candidates[0])
 
 
+def find_mfa_executable() -> str | None:
+    names = MFA_EXECUTABLE_NAMES if platform.system() == "Windows" else tuple(
+        name for name in MFA_EXECUTABLE_NAMES if not name.endswith(".exe")
+    )
+    search_roots = []
+    for root in quickfix_app_roots(PROJECT_ROOT):
+        mfa_tools = root / ".tools" / "mfa"
+        mfa_env = mfa_tools / "env"
+        search_roots.extend(
+            [
+                mfa_env / "Scripts",
+                mfa_env / "bin",
+                mfa_tools,
+                mfa_tools / "bin",
+                mfa_tools / "Scripts",
+            ]
+        )
+    for root in search_roots:
+        for name in names:
+            candidate = root / name
+            if candidate.exists():
+                return str(candidate)
+    for name in names:
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+def find_mfa_acoustic_model(model_name: str | None = None) -> str | None:
+    target_model = model_name or DEFAULT_MFA_ACOUSTIC_MODEL
+    saved = _saved_mfa_model_path("acoustic", target_model)
+    if saved:
+        return str(saved)
+    if model_name:
+        return None
+
+    candidates: list[Path] = []
+    for app_root in quickfix_app_roots(PROJECT_ROOT):
+        roots = [
+            app_root / "models" / "mfa",
+            app_root / ".tools" / "mfa" / "models",
+            app_root / ".tools" / "mfa" / "root" / "pretrained_models" / "acoustic",
+        ]
+        for root in roots:
+            if root.exists():
+                candidates.extend(path for path in root.rglob("*") if _looks_like_acoustic_model(path))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda path: (path.name.lower(), len(str(path))))
+    return str(candidates[0])
+
+
+def find_mfa_dictionary(model_name: str | None = None) -> str | None:
+    target_model = model_name or DEFAULT_MFA_DICTIONARY_MODEL
+    saved = _saved_mfa_model_path("dictionary", target_model)
+    if saved:
+        return str(saved)
+    if model_name:
+        return None
+
+    candidates: list[Path] = []
+    for app_root in quickfix_app_roots(PROJECT_ROOT):
+        roots = [
+            app_root / "models" / "mfa" / "dictionaries",
+            app_root / ".tools" / "mfa" / "models" / "dictionaries",
+            app_root / ".tools" / "mfa" / "root" / "pretrained_models" / "dictionary",
+        ]
+        for root in roots:
+            if root.exists():
+                candidates.extend(
+                    path for path in root.rglob("*") if path.is_file() and path.suffix.lower() in MFA_DICTIONARY_EXTENSIONS
+                )
+    if not candidates:
+        return None
+    candidates.sort(key=lambda path: (path.name.lower(), len(str(path))))
+    return str(candidates[0])
+
+
+def _looks_like_acoustic_model(path: Path) -> bool:
+    if path.is_file() and path.suffix.lower() in MFA_MODEL_EXTENSIONS:
+        return True
+    if path.is_dir():
+        try:
+            child_names = {child.name for child in path.iterdir()}
+        except OSError:
+            return False
+        return bool(child_names & MFA_MODEL_MARKERS)
+    return False
+
+
+def _saved_mfa_model_path(model_type: str, model_name: str) -> Path | None:
+    if model_type == "dictionary":
+        patterns = (f"{model_name}.dict", f"{model_name}.zip", model_name)
+    else:
+        patterns = (f"{model_name}.zip", model_name)
+    for app_root in quickfix_app_roots(PROJECT_ROOT):
+        root = app_root / ".tools" / "mfa" / "root" / "pretrained_models" / model_type
+        if not root.exists():
+            continue
+        for pattern in patterns:
+            candidate = root / pattern
+            if candidate.exists():
+                return candidate
+    return None
+
+
+def mfa_preset_paths(preset_id: str) -> tuple[str | None, str | None]:
+    preset = mfa_preset_by_id(preset_id)
+    if preset is None:
+        return None, None
+    return (
+        find_mfa_acoustic_model(preset.acoustic_model),
+        find_mfa_dictionary(preset.dictionary_model),
+    )
+
+
 def dependency_status() -> DependencyStatus:
     ffmpeg, ffprobe = find_ffmpeg_tools()
     return DependencyStatus(
@@ -110,4 +255,8 @@ def dependency_status() -> DependencyStatus:
         ffprobe_path=ffprobe,
         whisper_path=find_whisper_executable(),
         model_path=find_model_file(),
+        ipa_font_path=str(font_path) if (font_path := find_ipa_font_file()) else None,
+        mfa_path=find_mfa_executable(),
+        mfa_acoustic_model_path=find_mfa_acoustic_model(),
+        mfa_dictionary_path=find_mfa_dictionary(),
     )

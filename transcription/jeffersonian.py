@@ -6,6 +6,12 @@ from dataclasses import dataclass
 import re
 
 from transcription.models import TranscriptResult, TranscriptSegment, WordToken
+from transcription.nonword_sounds import (
+    normalize_nonword_token,
+    protect_nonword_markers,
+    replace_nonword_phrases,
+    restore_nonword_markers,
+)
 from transcription.speakers import speaker_label
 
 MIN_TIMED_SILENCE_SECONDS = 0.2
@@ -64,11 +70,18 @@ def _mandarin_text_to_pinyin(text: str) -> str:
     return CHINESE_TEXT_PATTERN.sub(lambda match: _chinese_run_to_pinyin(match.group(0)), text)
 
 
-def _normalize_text(text: str, language_code: str | None = None) -> str:
-    normalized = ASR_PUNCTUATION_PATTERN.sub("", text)
+def _normalize_text(text: str, language_code: str | None = None, confidence: float | None = None) -> str:
+    nonword = normalize_nonword_token(text, confidence)
+    if nonword is not None:
+        return nonword
+
+    normalized = replace_nonword_phrases(text)
     if _uses_mandarin_pinyin(language_code):
         normalized = _mandarin_text_to_pinyin(normalized)
-    return " ".join(normalized.split())
+    normalized, replacements = protect_nonword_markers(normalized)
+    normalized = ASR_PUNCTUATION_PATTERN.sub(" ", normalized)
+    normalized = " ".join(normalized.split())
+    return restore_nonword_markers(normalized, replacements)
 
 
 def _segment_text_and_spans(
@@ -84,7 +97,7 @@ def _segment_text_and_spans(
     previous: WordToken | None = None
 
     for word in segment.words:
-        text = _normalize_text(word.text, language_code)
+        text = _normalize_text(word.text, language_code, word.confidence)
         if not text:
             continue
 
@@ -254,7 +267,11 @@ def format_simple_jeffersonian(
     max_text_columns: int = MAX_TEXT_COLUMNS,
     language_code: str | None = None,
 ) -> list[str]:
-    """Format segments as a simple numbered Jeffersonian transcript."""
+    """Format segments as a simple numbered Jeffersonian transcript.
+
+    This preserves the recognized word order and speech disfluencies. It should
+    not grammar-correct, reorder, deduplicate, or otherwise smooth spoken text.
+    """
     effective_language = language_code or result.language
     labels: dict[str, str] = {}
     rows: list[JeffersonianRow] = []
@@ -263,7 +280,6 @@ def format_simple_jeffersonian(
 
     for segment in result.segments:
         text, _ = _segment_text_and_spans(segment, effective_language)
-        text = _normalize_text(text)
         if not text:
             continue
 

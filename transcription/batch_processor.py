@@ -11,8 +11,10 @@ from ffmpeg.ffmpeg_runner import FFmpegRunner
 from transcription.acoustic_analysis import apply_local_acoustic_annotations
 from transcription.engine import WhisperCppEngine
 from transcription.file_utils import temp_directory_for, unique_output_path
+from transcription.font_assets import IPA_FONT_FAMILY
 from transcription.jeffersonian import format_simple_jeffersonian
 from transcription.media import build_audio_extract_command, command_to_text
+from transcription.mfa_alignment import apply_mfa_word_alignment, phone_tier_lines, run_mfa_alignment
 from transcription.models import MediaRecord, TranscriptionOptions
 from transcription.rtf_exporter import transcript_lines, write_rtf
 
@@ -101,14 +103,44 @@ class TranscriptionBatchProcessor(QObject):
                     self.log_message.emit,
                     self.cancelled,
                 )
-                raw_result = result.shifted(start_seconds) if start_seconds else result
+
+                working_result = result
+                mfa_result = None
+                if self.options.use_mfa_alignment:
+                    mfa_result = run_mfa_alignment(
+                        temp_audio,
+                        working_result,
+                        temp_dir,
+                        self.options,
+                        self.log_message.emit,
+                        self.cancelled,
+                    )
+                    working_result = apply_mfa_word_alignment(working_result, mfa_result.words)
+                    if mfa_result.textgrid_path:
+                        textgrid_path = unique_output_path(record.path, "mfa_alignment", ".TextGrid")
+                        shutil.copy2(mfa_result.textgrid_path, textgrid_path)
+                        self.log_message.emit(f"Created: {textgrid_path}")
+
+                raw_result = working_result.shifted(start_seconds) if start_seconds else working_result
 
                 raw_path = unique_output_path(record.path, "transcript", ".rtf")
-                write_rtf(raw_path, f"Transcript: {record.path.name}", transcript_lines(raw_result))
+                raw_font = IPA_FONT_FAMILY if self.options.use_ipa_font_regular else "Calibri"
+                write_rtf(raw_path, f"Transcript: {record.path.name}", transcript_lines(raw_result), font_name=raw_font)
                 self.log_message.emit(f"Created: {raw_path}")
 
+                if self.options.export_mfa_phone_transcript and mfa_result:
+                    phone_path = unique_output_path(record.path, "mfa_phones", ".rtf")
+                    phone_result = working_result.shifted(start_seconds) if start_seconds else working_result
+                    write_rtf(
+                        phone_path,
+                        f"MFA phone-tier transcript: {record.path.name}",
+                        phone_tier_lines(phone_result, mfa_result.phones),
+                        font_name=IPA_FONT_FAMILY,
+                    )
+                    self.log_message.emit(f"Created: {phone_path}")
+
                 if self.options.jeffersonian:
-                    jeffersonian_result = apply_local_acoustic_annotations(temp_audio, result, self.log_message.emit)
+                    jeffersonian_result = apply_local_acoustic_annotations(temp_audio, working_result, self.log_message.emit)
                     if start_seconds:
                         jeffersonian_result = jeffersonian_result.shifted(start_seconds)
                     jeffersonian_path = unique_output_path(record.path, "jeffersonian", ".rtf")
@@ -120,7 +152,7 @@ class TranscriptionBatchProcessor(QObject):
                             max_text_columns=self.options.jeffersonian_line_width,
                             language_code=self.options.language_code or jeffersonian_result.language,
                         ),
-                        font_name="Courier New",
+                        font_name=IPA_FONT_FAMILY if self.options.use_ipa_font_jeffersonian else "Courier New",
                         include_title=False,
                     )
                     self.log_message.emit(f"Created: {jeffersonian_path}")

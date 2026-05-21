@@ -7,9 +7,11 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $root = $PSScriptRoot
+$appName = Split-Path -Leaf $root
+$dependencyRoot = Join-Path (Split-Path -Parent $root) "QuickFixAppDependencies"
 $requirements = Join-Path $root "requirements.txt"
-$venvRoot = Join-Path $root ".venv"
-$venvPython = Join-Path $root ".venv\Scripts\python.exe"
+$venvRoot = Join-Path (Join-Path $dependencyRoot ".venvs") $appName
+$venvPython = Join-Path $venvRoot "Scripts\python.exe"
 
 function Confirm-Yes {
     param([string]$Question)
@@ -114,7 +116,7 @@ function Ensure-Python {
 }
 
 function Ensure-FFmpeg {
-    $local = Join-Path $root ".tools\ffmpeg\bin\ffmpeg.exe"
+    $local = Join-Path $dependencyRoot ".tools\ffmpeg\bin\ffmpeg.exe"
     if ((Test-Path -LiteralPath $local) -or (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
         return
     }
@@ -148,22 +150,24 @@ function Invoke-Python {
 
 function Remove-BrokenVenv {
     if ((Test-Path -LiteralPath $venvRoot) -and -not (Test-PythonExecutable -Python $venvPython)) {
-        $rootFull = [System.IO.Path]::GetFullPath($root).TrimEnd("\") + "\"
+        $rootFull = [System.IO.Path]::GetFullPath($dependencyRoot).TrimEnd("\") + "\"
         $venvFull = [System.IO.Path]::GetFullPath($venvRoot)
         if (-not $venvFull.StartsWith($rootFull, [System.StringComparison]::OrdinalIgnoreCase)) {
             throw "Refusing to remove unexpected virtual environment path: $venvFull"
         }
-        Write-Host "Removing incomplete .venv from a previous failed setup."
+        Write-Host "Removing incomplete shared virtual environment from a previous failed setup."
         Remove-Item -LiteralPath $venvRoot -Recurse -Force
     }
 }
 
 Write-Host "Bootstrapping QuickFixTranscription for Windows."
+New-Item -ItemType Directory -Force -Path $dependencyRoot | Out-Null
 $python = Ensure-Python
 Ensure-FFmpeg
 Remove-BrokenVenv
 
 if (-not (Test-Path -LiteralPath $venvPython)) {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $venvRoot) | Out-Null
     Invoke-Python -Python $python -Arguments @("-m", "venv", $venvRoot)
 }
 
@@ -179,7 +183,7 @@ if ($LASTEXITCODE -ne 0) {
 
 & $venvPython -m transcription.model_setup --yes
 if ($LASTEXITCODE -ne 0) {
-    Write-Warning "Default Whisper model setup did not complete. You can still choose a local model in the app."
+    Write-Warning "Runtime asset setup did not complete. You can still choose local paths in the app."
 }
 
 Write-Host "Bootstrap complete."

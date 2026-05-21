@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable
 
 from transcription.models import TranscriptResult, TranscriptSegment, WordToken
+from transcription.nonword_sounds import is_supported_nonword_source
 
 
 class MissingDependencyError(RuntimeError):
@@ -84,7 +85,7 @@ def _parse_word_tokens(segment: dict, speaker: str | None) -> tuple[WordToken, .
         text = str(raw.get("word") or raw.get("text") or raw.get("token") or "").strip()
         if not text:
             continue
-        if text.startswith("[") and text.endswith("]"):
+        if text.startswith("[") and text.endswith("]") and not is_supported_nonword_source(text):
             continue
         start = _segment_time(raw, "from")
         end = _segment_time(raw, "to")

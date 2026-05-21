@@ -11,7 +11,8 @@ $root = $PSScriptRoot
 $bootstrap = Join-Path $root "agent-bootstrap.ps1"
 $main = Join-Path $root "main.py"
 $requirements = Join-Path $root "requirements.txt"
-$venvPython = Join-Path $root ".venv\Scripts\python.exe"
+$dependencyRoot = Join-Path (Split-Path -Parent $root) "QuickFixAppDependencies"
+$venvPython = Join-Path (Join-Path (Join-Path $dependencyRoot ".venvs") (Split-Path -Leaf $root)) "Scripts\python.exe"
 
 function Test-LocalPython {
     if (-not (Test-Path -LiteralPath $venvPython)) {
@@ -39,13 +40,13 @@ function Ensure-PythonRequirements {
     }
 }
 
-function Ensure-DefaultWhisperModel {
+function Ensure-RuntimeAssets {
     if (-not (Test-LocalPython)) {
         return
     }
     & $venvPython -m transcription.model_setup --yes
     if ($LASTEXITCODE -ne 0) {
-        Write-Warning "Default Whisper model setup did not complete. You can still choose a local model in the app."
+        Write-Warning "Runtime asset setup did not complete. You can still choose local paths in the app."
     }
 }
 
@@ -61,7 +62,7 @@ if ($SetupOnly -or -not (Test-LocalPython)) {
 }
 
 Ensure-PythonRequirements
-Ensure-DefaultWhisperModel
+Ensure-RuntimeAssets
 
 if ($SetupOnly) {
     exit 0

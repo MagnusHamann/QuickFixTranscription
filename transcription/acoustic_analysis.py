@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Callable
 
 from transcription.models import TranscriptResult, TranscriptSegment, WordToken
+from transcription.nonword_sounds import normalize_nonword_token
 
 
 LOUD_RATIO = 1.75
@@ -154,6 +155,10 @@ def _annotate_word(
     pitch_end: float | None,
     cutoff: bool,
 ) -> str:
+    nonword = normalize_nonword_token(word.text, word.confidence)
+    if nonword is not None:
+        return nonword
+
     text = ASR_PUNCTUATION_PATTERN.sub("", word.text).strip()
 
     if duration is not None and median_duration is not None:

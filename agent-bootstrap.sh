@@ -12,7 +12,7 @@ while [ "$#" -gt 0 ]; do
             cat <<'HELP'
 Usage: ./agent-bootstrap.sh [--yes]
 
-Installs/checks Python, FFmpeg, creates .venv, and installs Python dependencies
+Installs/checks Python, FFmpeg, creates the shared app venv, and installs Python dependencies
 for QuickFixTranscription.
 HELP
             exit 0
@@ -25,7 +25,10 @@ HELP
     shift
 done
 
-cd "$(dirname "$0")"
+APP_DIR="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
+DEPENDENCY_ROOT="$(dirname "$APP_DIR")/QuickFixAppDependencies"
+VENV_DIR="$DEPENDENCY_ROOT/.venvs/QuickFixTranscription"
+cd "$APP_DIR"
 
 confirm() {
     if [ "$ASSUME_YES" -eq 1 ]; then
@@ -173,11 +176,12 @@ case "$(uname -s)" in
         ;;
 esac
 
-python3 -m venv .venv
-. ./.venv/bin/activate
+mkdir -p "$(dirname "$VENV_DIR")"
+python3 -m venv "$VENV_DIR"
+. "$VENV_DIR/bin/activate"
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-python -m transcription.model_setup --yes || echo "Default Whisper model setup did not complete. You can still choose a local model in the app."
+python -m transcription.model_setup --yes || echo "Runtime asset setup did not complete. You can still choose local paths in the app."
 
 echo "Bootstrap complete."
 echo "Run QuickFixTranscription with: ./Run QuickFixTranscription Linux.sh"

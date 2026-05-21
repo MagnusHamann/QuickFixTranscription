@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Qt, Slot
+from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSplitter,
     QStatusBar,
     QTableWidget,
@@ -26,10 +27,35 @@ from PySide6.QtWidgets import (
 
 from ffmpeg.ffmpeg_runner import FFmpegRunner, find_ffmpeg_tools
 from transcription.batch_processor import TranscriptionBatchProcessor
+from transcription.dependencies import dependency_status
 from transcription.file_utils import collect_media_files, human_size, probe_media_record
+from transcription.mfa_presets import mfa_preset_by_id
 from transcription.models import MediaRecord
 from ui.drag_drop_widget import DragDropWidget
 from ui.transcription_options_panel import TranscriptionOptionsPanel
+
+
+class MfaPresetDownloadWorker(QObject):
+    """Download one selected MFA preset without blocking the main UI."""
+
+    log_message = Signal(str)
+    finished = Signal(bool)
+
+    def __init__(self, preset_id: str) -> None:
+        super().__init__()
+        self.preset_id = preset_id
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            from transcription.mfa_setup import download_mfa_preset, install_mfa
+
+            install_mfa(self.log_message.emit)
+            ok = download_mfa_preset(self.preset_id, self.log_message.emit)
+        except Exception as exc:
+            self.log_message.emit(f"MFA preset download failed: {exc}")
+            ok = False
+        self.finished.emit(ok)
 
 
 class TranscriptionWindow(QMainWindow):
@@ -41,6 +67,8 @@ class TranscriptionWindow(QMainWindow):
         self.records: list[MediaRecord] = []
         self.worker_thread: QThread | None = None
         self.worker: TranscriptionBatchProcessor | None = None
+        self.mfa_download_thread: QThread | None = None
+        self.mfa_download_worker: MfaPresetDownloadWorker | None = None
         self.runner = FFmpegRunner()
 
         self.drop_zone = DragDropWidget(
@@ -84,9 +112,16 @@ class TranscriptionWindow(QMainWindow):
         left_layout.addWidget(QLabel("Detected media"))
         left_layout.addWidget(self.table)
 
+        options_scroll = QScrollArea()
+        options_scroll.setWidgetResizable(True)
+        options_scroll.setFrameShape(QScrollArea.NoFrame)
+        options_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        options_scroll.setWidget(self.options_panel)
+        options_scroll.setMinimumWidth(360)
+
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(left)
-        splitter.addWidget(self.options_panel)
+        splitter.addWidget(options_scroll)
         splitter.setStretchFactor(0, 4)
         splitter.setStretchFactor(1, 1)
 
@@ -133,6 +168,7 @@ class TranscriptionWindow(QMainWindow):
         self.drop_zone.paths_dropped.connect(self.add_paths)
         self.start_button.clicked.connect(self.start_transcription)
         self.cancel_button.clicked.connect(self.cancel_transcription)
+        self.options_panel.mfa_preset_download_requested.connect(self.download_mfa_preset)
 
     def _check_ffmpeg(self) -> None:
         ffmpeg, ffprobe = find_ffmpeg_tools()
@@ -250,8 +286,46 @@ class TranscriptionWindow(QMainWindow):
             self.append_log("Cancellation requested. Current local process will be stopped.")
 
     @Slot(str)
+    def download_mfa_preset(self, preset_id: str) -> None:
+        if self.mfa_download_thread is not None:
+            QMessageBox.information(self, "MFA setup running", "An MFA preset download is already running.")
+            return
+        preset = mfa_preset_by_id(preset_id)
+        if preset is None:
+            QMessageBox.warning(self, "Unknown MFA preset", "Choose a valid MFA preset first.")
+            return
+
+        self.append_log(f"Downloading local MFA preset: {preset.label}")
+        self.append_log("This setup may use the internet for model files, but it does not upload recordings or transcripts.")
+        self.options_panel.set_mfa_download_running(True)
+        self.status.showMessage("Downloading MFA preset...")
+
+        self.mfa_download_thread = QThread(self)
+        self.mfa_download_worker = MfaPresetDownloadWorker(preset_id)
+        self.mfa_download_worker.moveToThread(self.mfa_download_thread)
+        self.mfa_download_thread.started.connect(self.mfa_download_worker.run)
+        self.mfa_download_worker.log_message.connect(self.append_log)
+        self.mfa_download_worker.finished.connect(self.mfa_preset_download_finished)
+        self.mfa_download_worker.finished.connect(self.mfa_download_thread.quit)
+        self.mfa_download_worker.finished.connect(self.mfa_download_worker.deleteLater)
+        self.mfa_download_thread.finished.connect(self.mfa_download_thread.deleteLater)
+        self.mfa_download_thread.start()
+
+    @Slot(str)
     def append_log(self, message: str) -> None:
         self.log.appendPlainText(message)
+
+    @Slot(bool)
+    def mfa_preset_download_finished(self, ok: bool) -> None:
+        self.mfa_download_worker = None
+        self.mfa_download_thread = None
+        self.options_panel.set_mfa_download_running(False)
+        self.options_panel.apply_dependency_status(dependency_status())
+        self.status.showMessage("MFA preset download complete." if ok else "MFA preset download failed.")
+        if ok:
+            QMessageBox.information(self, "MFA preset ready", "The selected local MFA preset is ready.")
+        else:
+            QMessageBox.warning(self, "MFA preset problem", "The selected MFA preset could not be downloaded.")
 
     @Slot(int, int)
     def transcription_finished(self, completed: int, failed: int) -> None:
@@ -261,4 +335,3 @@ class TranscriptionWindow(QMainWindow):
         self.worker_thread = None
         self.status.showMessage(f"Done. Completed: {completed}. Failed: {failed}.")
         QMessageBox.information(self, "Transcription complete", f"Completed: {completed}\nFailed: {failed}")
-

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import shutil
 
 from transcription.time_utils import validate_time_range
 
@@ -77,6 +78,13 @@ class TranscriptionOptions:
     finish_time: str = ""
     jeffersonian: bool = False
     jeffersonian_line_width: int = 50
+    use_mfa_alignment: bool = False
+    mfa_executable: str = ""
+    mfa_acoustic_model: str = ""
+    mfa_dictionary: str = ""
+    use_ipa_font_regular: bool = False
+    use_ipa_font_jeffersonian: bool = False
+    export_mfa_phone_transcript: bool = False
     keep_temp_audio: bool = False
 
     def validate(self) -> tuple[int | None, int | None]:
@@ -92,6 +100,26 @@ class TranscriptionOptions:
 
         if not 20 <= self.jeffersonian_line_width <= 200:
             raise ValueError("Jeffersonian line width must be between 20 and 200 characters.")
+
+        if self.use_mfa_alignment:
+            if not self.mfa_executable.strip():
+                raise ValueError("Choose a local MFA executable before enabling heavy MFA alignment.")
+            mfa_path = Path(self.mfa_executable).expanduser()
+            if not mfa_path.exists() and shutil.which(self.mfa_executable) is None:
+                raise ValueError("The selected MFA executable was not found.")
+
+            if not self.mfa_acoustic_model.strip():
+                raise ValueError("Choose a local MFA acoustic model before enabling heavy MFA alignment.")
+            if not Path(self.mfa_acoustic_model).expanduser().exists():
+                raise ValueError("The selected MFA acoustic model was not found.")
+
+            if not self.mfa_dictionary.strip():
+                raise ValueError("Choose a local MFA pronunciation dictionary before enabling heavy MFA alignment.")
+            if not Path(self.mfa_dictionary).expanduser().exists():
+                raise ValueError("The selected MFA pronunciation dictionary was not found.")
+
+        if self.export_mfa_phone_transcript and not self.use_mfa_alignment:
+            raise ValueError("Enable heavy MFA alignment before exporting an MFA phone-tier transcript.")
 
         if self.transcribe_section:
             return validate_time_range(self.start_time, self.finish_time)
