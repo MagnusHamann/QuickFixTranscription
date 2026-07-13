@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -24,7 +25,13 @@ from PySide6.QtWidgets import (
 from transcription.dependencies import DependencyStatus, dependency_status, find_mfa_acoustic_model, find_mfa_dictionary
 from transcription.languages import LANGUAGE_CHOICES
 from transcription.mfa_presets import MFA_PRESETS, language_codes_with_mfa_presets, mfa_preset_by_id, preset_for_language_code
-from transcription.models import TranscriptionOptions
+from transcription.models import (
+    BROAD_JEFFERSONIAN_TRANSCRIPTION,
+    NARROW_JEFFERSONIAN_TRANSCRIPTION,
+    TRANSCRIPTION_MODE_LABELS,
+    VERBATIM_TRANSCRIPTION,
+    TranscriptionOptions,
+)
 
 
 class TranscriptionOptionsPanel(QWidget):
@@ -55,17 +62,19 @@ class TranscriptionOptionsPanel(QWidget):
         self.start_time.setPlaceholderText("mm:ss or hh:mm:ss")
         self.finish_time.setPlaceholderText("mm:ss or hh:mm:ss")
 
-        self.jeffersonian = QCheckBox("Upgrade to simple Jeffersonian transcription")
+        self.transcription_mode = QComboBox()
+        self.transcription_mode.addItem(TRANSCRIPTION_MODE_LABELS[VERBATIM_TRANSCRIPTION], VERBATIM_TRANSCRIPTION)
+        self.transcription_mode.addItem(TRANSCRIPTION_MODE_LABELS[BROAD_JEFFERSONIAN_TRANSCRIPTION], BROAD_JEFFERSONIAN_TRANSCRIPTION)
+        self.transcription_mode.addItem(
+            f"{TRANSCRIPTION_MODE_LABELS[NARROW_JEFFERSONIAN_TRANSCRIPTION]} (slower, local MFA)",
+            NARROW_JEFFERSONIAN_TRANSCRIPTION,
+        )
         self.jeffersonian_line_width = QSpinBox()
         self.jeffersonian_line_width.setRange(20, 200)
         self.jeffersonian_line_width.setValue(50)
         self.jeffersonian_line_width.setSingleStep(5)
         self.jeffersonian_line_width.setSuffix(" chars")
         self.jeffersonian_line_width.setToolTip("Maximum Jeffersonian transcript text characters per line. Default is 50.")
-        self.use_mfa_alignment = QCheckBox("Use MFA precision alignment (HEAVY / slower)")
-        self.use_mfa_alignment.setToolTip(
-            "Optional local Montreal Forced Aligner pass. Requires local MFA, acoustic model, and dictionary files."
-        )
         self.mfa_preset = QComboBox()
         for preset in MFA_PRESETS:
             self.mfa_preset.addItem(preset.label, preset.id)
@@ -86,29 +95,19 @@ class TranscriptionOptionsPanel(QWidget):
         self.mfa_dictionary_browse = QPushButton("Browse")
         self.use_ipa_font_regular = QCheckBox("Use IPA font for regular transcript")
         self.use_ipa_font_jeffersonian = QCheckBox("Use IPA font for Jeffersonian transcript")
-        self.export_mfa_phone_transcript = QCheckBox("Export MFA phone-tier transcript")
-        self.export_mfa_phone_transcript.setToolTip(
-            "Creates a separate phone-tier RTF from the MFA TextGrid. Symbols depend on the local MFA dictionary/model."
-        )
-        self.keep_temp_audio = QCheckBox("Keep temporary WAV files")
         self.review_note = QPlainTextEdit()
         self.review_note.setPlainText(
-            "Jeffersonian output is a first-pass local annotation.\n\n"
-            "Auto: verbatim words, SP1/SP2/SP3 speaker labels, "
-            "preserved repetitions/repairs/false starts, line numbers, no ASR punctuation, configurable line wrapping, [overlap], silences of 0.2s+, "
-            "loud/quiet speech, pitch shifts, rate changes, likely prolongation, "
-            "possible cut-offs, low-confidence words as best guesses like (example), unclear sounds as (     ), supported non-word sounds "
-            "such as ((cough)), ((clears throat)), .snih., ((sigh)), .mt., .dt., .hhh, hhh, hm, mm, and mhm, "
-            "and Pinyin rendering for Mandarin Chinese Jeffersonian output.\n\n"
-            "Optional HEAVY MFA alignment: uses local Montreal Forced Aligner assets to refine word/phone timing. "
-            "This can take much longer and works only when the MFA executable, acoustic model, and dictionary are local. "
-            "Use the MFA preset dropdown for UK English, US English, Mandarin, and other languages where MFA provides "
-            "both an acoustic model and dictionary.\n\n"
-            "IPA font: setup downloads the local Charis Unicode font for IPA display. "
-            "A font improves display only; actual IPA/phone transcription requires a local phone source such as MFA.\n\n"
-            "Review manually: emphasis/underlining, exact intonation marks, laughter "
-            "and smiley/shaky voice, uncertain or misclassified "
-            "non-word sounds, analyst comments, and any speaker or overlap errors."
+            "The app now writes one selected .rtf transcript per source file.\n\n"
+            "Broad Jeffersonian transcription is the faster structural pass. It uses local Whisper timing plus "
+            "channel-separated local overlap analysis when the recording has distinct speaker channels. It marks "
+            "temporal/sequential notation: SP1/SP2/SP3 labels, line numbers, configurable line wrapping, no ASR punctuation, "
+            "[overlap] brackets, latching with =, and timed pauses of 0.2s+. It skips local MFA and acoustic voice-quality analysis.\n\n"
+            "Narrow Jeffersonian transcription is slower. It adds local MFA alignment and local acoustic analysis for voice-quality "
+            "and prosodic detail: low-confidence words as (best guess), unclear sounds as (     ), supported non-word sounds such as "
+            "((cough)), ((clears throat)), .snih., ((sigh)), .mt., .dt., .hhh, hhh, hm, mm, and mhm, prolongation with :, loud/quiet "
+            "speech, pitch-shift arrows, speaking-rate markers, and possible cut-offs. It still runs only on this computer.\n\n"
+            "Review manually: exact underlining/emphasis, final intonation punctuation, smiley/creaky/shaky voice, analyst comments, "
+            "exact overlap placement, and any speaker or uncertain-sound errors."
         )
         self.review_note.setReadOnly(True)
         self.review_note.setMinimumHeight(110)
@@ -117,6 +116,22 @@ class TranscriptionOptionsPanel(QWidget):
         self.review_note.setObjectName("ReviewNote")
 
         self.refresh_dependencies = QPushButton("Refresh dependency check")
+        self.dependencies_toggle = QToolButton()
+        self.dependencies_toggle.setText("Dependencies")
+        self.dependencies_toggle.setCheckable(True)
+        self.dependencies_toggle.setChecked(False)
+        self.dependencies_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.dependencies_toggle.setArrowType(Qt.RightArrow)
+        self.dependencies_content = QWidget()
+        self.dependencies_content.setVisible(False)
+        self.advanced_toggle = QToolButton()
+        self.advanced_toggle.setText("Advanced local setup")
+        self.advanced_toggle.setCheckable(True)
+        self.advanced_toggle.setChecked(False)
+        self.advanced_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.advanced_toggle.setArrowType(Qt.RightArrow)
+        self.advanced_content = QWidget()
+        self.advanced_content.setVisible(False)
 
         self._build_layout()
         self._wire_events()
@@ -127,22 +142,15 @@ class TranscriptionOptionsPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        status_group = QGroupBox("Local setup")
-        status_layout = QVBoxLayout(status_group)
+        dependencies_box = QWidget()
+        dependencies_layout = QVBoxLayout(dependencies_box)
+        dependencies_layout.setContentsMargins(0, 0, 0, 0)
+        dependencies_layout.addWidget(self.dependencies_toggle)
+        status_layout = QVBoxLayout(self.dependencies_content)
+        status_layout.setContentsMargins(18, 0, 0, 0)
         status_layout.addWidget(self.status_label)
         status_layout.addWidget(self.refresh_dependencies)
-
-        engine_group = QGroupBox("Local engine")
-        engine_layout = QFormLayout(engine_group)
-        whisper_row = QHBoxLayout()
-        whisper_row.addWidget(self.whisper_path)
-        whisper_row.addWidget(self.whisper_browse)
-        model_row = QHBoxLayout()
-        model_row.addWidget(self.model_path)
-        model_row.addWidget(self.model_browse)
-        engine_layout.addRow("whisper.cpp", whisper_row)
-        engine_layout.addRow("Model", model_row)
-        engine_layout.addRow("Language", self.language)
+        dependencies_layout.addWidget(self.dependencies_content)
 
         section_group = QGroupBox("Section")
         section_layout = QFormLayout(section_group)
@@ -152,35 +160,64 @@ class TranscriptionOptionsPanel(QWidget):
 
         output_group = QGroupBox("Output")
         output_layout = QVBoxLayout(output_group)
-        output_layout.addWidget(self.jeffersonian)
+        output_layout.addWidget(QLabel("Language"))
+        output_layout.addWidget(self.language)
+        output_layout.addWidget(QLabel("Transcription type"))
+        output_layout.addWidget(self.transcription_mode)
         line_width_row = QHBoxLayout()
         line_width_row.addWidget(QLabel("Jeffersonian line width"))
         line_width_row.addWidget(self.jeffersonian_line_width)
         line_width_row.addStretch(1)
         output_layout.addLayout(line_width_row)
-        output_layout.addWidget(self.use_mfa_alignment)
+        output_layout.addWidget(self.review_note)
+
+        advanced_box = QWidget()
+        advanced_layout = QVBoxLayout(advanced_box)
+        advanced_layout.setContentsMargins(0, 0, 0, 0)
+        advanced_layout.addWidget(self.advanced_toggle)
+        advanced_content_layout = QVBoxLayout(self.advanced_content)
+        advanced_content_layout.setContentsMargins(18, 0, 0, 0)
+
+        engine_group = QGroupBox("Local model paths")
+        engine_layout = QFormLayout(engine_group)
+        whisper_row = QHBoxLayout()
+        whisper_row.addWidget(self.whisper_path)
+        whisper_row.addWidget(self.whisper_browse)
+        model_row = QHBoxLayout()
+        model_row.addWidget(self.model_path)
+        model_row.addWidget(self.model_browse)
+        engine_layout.addRow("whisper.cpp", whisper_row)
+        engine_layout.addRow("Model", model_row)
+
+        mfa_group = QGroupBox("Narrow Jeffersonian local MFA")
+        mfa_layout = QVBoxLayout(mfa_group)
         mfa_preset_row = QHBoxLayout()
         mfa_preset_row.addWidget(self.mfa_preset, stretch=1)
         mfa_preset_row.addWidget(self.download_mfa_preset)
-        output_layout.addLayout(mfa_preset_row)
-        output_layout.addWidget(self.mfa_preset_hint)
+        mfa_layout.addLayout(mfa_preset_row)
+        mfa_layout.addWidget(self.mfa_preset_hint)
         mfa_executable_row = QHBoxLayout()
         mfa_executable_row.addWidget(self.mfa_path)
         mfa_executable_row.addWidget(self.mfa_browse)
-        output_layout.addLayout(mfa_executable_row)
+        mfa_layout.addLayout(mfa_executable_row)
         mfa_model_row = QHBoxLayout()
         mfa_model_row.addWidget(self.mfa_model_path)
         mfa_model_row.addWidget(self.mfa_model_browse)
-        output_layout.addLayout(mfa_model_row)
+        mfa_layout.addLayout(mfa_model_row)
         mfa_dictionary_row = QHBoxLayout()
         mfa_dictionary_row.addWidget(self.mfa_dictionary_path)
         mfa_dictionary_row.addWidget(self.mfa_dictionary_browse)
-        output_layout.addLayout(mfa_dictionary_row)
-        output_layout.addWidget(self.use_ipa_font_regular)
-        output_layout.addWidget(self.use_ipa_font_jeffersonian)
-        output_layout.addWidget(self.export_mfa_phone_transcript)
-        output_layout.addWidget(self.keep_temp_audio)
-        output_layout.addWidget(self.review_note)
+        mfa_layout.addLayout(mfa_dictionary_row)
+
+        display_group = QGroupBox("Export font")
+        display_layout = QVBoxLayout(display_group)
+        display_layout.addWidget(self.use_ipa_font_regular)
+        display_layout.addWidget(self.use_ipa_font_jeffersonian)
+
+        advanced_content_layout.addWidget(engine_group)
+        advanced_content_layout.addWidget(mfa_group)
+        advanced_content_layout.addWidget(display_group)
+        advanced_layout.addWidget(self.advanced_content)
 
         for button in (
             self.whisper_browse,
@@ -192,11 +229,13 @@ class TranscriptionOptionsPanel(QWidget):
             self.refresh_dependencies,
         ):
             button.setCursor(Qt.PointingHandCursor)
+        self.dependencies_toggle.setCursor(Qt.PointingHandCursor)
+        self.advanced_toggle.setCursor(Qt.PointingHandCursor)
 
-        layout.addWidget(status_group)
-        layout.addWidget(engine_group)
-        layout.addWidget(section_group)
+        layout.addWidget(dependencies_box)
         layout.addWidget(output_group)
+        layout.addWidget(section_group)
+        layout.addWidget(advanced_box)
         layout.addStretch(1)
 
         self.setStyleSheet(
@@ -219,11 +258,13 @@ class TranscriptionOptionsPanel(QWidget):
         self.mfa_dictionary_browse.clicked.connect(self.choose_mfa_dictionary)
         self.download_mfa_preset.clicked.connect(self.request_mfa_preset_download)
         self.refresh_dependencies.clicked.connect(self.refresh_dependency_status)
+        self.dependencies_toggle.toggled.connect(self._toggle_dependencies)
+        self.advanced_toggle.toggled.connect(self._toggle_advanced_setup)
         self.transcribe_section.toggled.connect(self._update_visibility)
-        self.jeffersonian.toggled.connect(self._update_visibility)
-        self.use_mfa_alignment.toggled.connect(self._update_visibility)
+        self.transcription_mode.currentIndexChanged.connect(self._update_visibility)
         self.mfa_preset.currentIndexChanged.connect(self._mfa_preset_changed)
         self.language.currentIndexChanged.connect(self._language_changed)
+        self.transcription_mode.currentIndexChanged.connect(lambda _value: self.options_changed.emit())
 
         for widget in (
             self.whisper_path,
@@ -237,22 +278,30 @@ class TranscriptionOptionsPanel(QWidget):
             widget.textChanged.connect(self.options_changed)
         for checkbox in (
             self.transcribe_section,
-            self.jeffersonian,
-            self.use_mfa_alignment,
             self.use_ipa_font_regular,
             self.use_ipa_font_jeffersonian,
-            self.export_mfa_phone_transcript,
-            self.keep_temp_audio,
         ):
             checkbox.toggled.connect(self.options_changed)
         self.jeffersonian_line_width.valueChanged.connect(lambda _value: self.options_changed.emit())
+
+    def _toggle_dependencies(self, checked: bool) -> None:
+        self.dependencies_content.setVisible(checked)
+        self.dependencies_toggle.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
+
+    def _toggle_advanced_setup(self, checked: bool) -> None:
+        self.advanced_content.setVisible(checked)
+        self.advanced_toggle.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
 
     def _update_visibility(self) -> None:
         enabled = self.transcribe_section.isChecked()
         self.start_time.setEnabled(enabled)
         self.finish_time.setEnabled(enabled)
-        self.jeffersonian_line_width.setEnabled(self.jeffersonian.isChecked())
-        mfa_enabled = self.use_mfa_alignment.isChecked()
+        mode = self.current_transcription_mode()
+        is_jeffersonian = mode != VERBATIM_TRANSCRIPTION
+        mfa_enabled = mode == NARROW_JEFFERSONIAN_TRANSCRIPTION
+        self.jeffersonian_line_width.setEnabled(is_jeffersonian)
+        self.use_ipa_font_regular.setEnabled(mode == VERBATIM_TRANSCRIPTION)
+        self.use_ipa_font_jeffersonian.setEnabled(is_jeffersonian)
         for widget in (
             self.mfa_preset,
             self.mfa_preset_hint,
@@ -263,7 +312,6 @@ class TranscriptionOptionsPanel(QWidget):
             self.mfa_browse,
             self.mfa_model_browse,
             self.mfa_dictionary_browse,
-            self.export_mfa_phone_transcript,
         ):
             widget.setEnabled(mfa_enabled)
         self._update_mfa_preset_hint()
@@ -297,12 +345,16 @@ class TranscriptionOptionsPanel(QWidget):
         self.mfa_preset_download_requested.emit(self.current_mfa_preset_id())
 
     def set_mfa_download_running(self, running: bool) -> None:
-        self.download_mfa_preset.setEnabled(not running and self.use_mfa_alignment.isChecked())
-        self.mfa_preset.setEnabled(not running and self.use_mfa_alignment.isChecked())
+        narrow = self.current_transcription_mode() == NARROW_JEFFERSONIAN_TRANSCRIPTION
+        self.download_mfa_preset.setEnabled(not running and narrow)
+        self.mfa_preset.setEnabled(not running and narrow)
         if running:
             self.mfa_preset_hint.setText("Downloading selected local MFA preset. This may take a while.")
         else:
             self._update_mfa_preset_hint()
+
+    def current_transcription_mode(self) -> str:
+        return str(self.transcription_mode.currentData() or VERBATIM_TRANSCRIPTION)
 
     def current_mfa_preset_id(self) -> str:
         return str(self.mfa_preset.currentData() or "")
@@ -339,7 +391,7 @@ class TranscriptionOptionsPanel(QWidget):
     def _update_mfa_preset_hint(self) -> None:
         preset = mfa_preset_by_id(self.current_mfa_preset_id())
         if not preset:
-            self.mfa_preset_hint.setText("Choose an MFA preset for optional heavy alignment.")
+            self.mfa_preset_hint.setText("Choose an MFA preset for narrow Jeffersonian transcription.")
             return
 
         acoustic_path = find_mfa_acoustic_model(preset.acoustic_model)
@@ -351,7 +403,7 @@ class TranscriptionOptionsPanel(QWidget):
         if language_code and language_code not in mfa_languages:
             unsupported_note = (
                 " The selected transcription language has no bundled MFA preset here; "
-                "regular Whisper transcription still works locally."
+                "verbatim and broad Jeffersonian transcription still work locally."
             )
         if installed:
             text = f"Selected MFA preset is installed: {preset.acoustic_model} + {preset.dictionary_model}."
@@ -400,18 +452,19 @@ class TranscriptionOptionsPanel(QWidget):
         return TranscriptionOptions(
             whisper_executable=self.whisper_path.text().strip(),
             model_path=self.model_path.text().strip(),
+            transcription_mode=self.current_transcription_mode(),
             language_code=str(self.language.currentData() or ""),
             transcribe_section=self.transcribe_section.isChecked(),
             start_time=self.start_time.text().strip(),
             finish_time=self.finish_time.text().strip(),
-            jeffersonian=self.jeffersonian.isChecked(),
+            jeffersonian=self.current_transcription_mode() != VERBATIM_TRANSCRIPTION,
             jeffersonian_line_width=self.jeffersonian_line_width.value(),
-            use_mfa_alignment=self.use_mfa_alignment.isChecked(),
+            use_mfa_alignment=self.current_transcription_mode() == NARROW_JEFFERSONIAN_TRANSCRIPTION,
             mfa_executable=self.mfa_path.text().strip(),
             mfa_acoustic_model=self.mfa_model_path.text().strip(),
             mfa_dictionary=self.mfa_dictionary_path.text().strip(),
             use_ipa_font_regular=self.use_ipa_font_regular.isChecked(),
             use_ipa_font_jeffersonian=self.use_ipa_font_jeffersonian.isChecked(),
-            export_mfa_phone_transcript=self.export_mfa_phone_transcript.isChecked(),
-            keep_temp_audio=self.keep_temp_audio.isChecked(),
+            export_mfa_phone_transcript=False,
+            keep_temp_audio=False,
         )

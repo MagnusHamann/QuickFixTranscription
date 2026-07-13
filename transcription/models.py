@@ -9,6 +9,23 @@ import shutil
 from transcription.time_utils import validate_time_range
 
 
+VERBATIM_TRANSCRIPTION = "verbatim"
+BROAD_JEFFERSONIAN_TRANSCRIPTION = "broad_jeffersonian"
+NARROW_JEFFERSONIAN_TRANSCRIPTION = "narrow_jeffersonian"
+
+TRANSCRIPTION_MODE_LABELS = {
+    VERBATIM_TRANSCRIPTION: "Verbatim transcription",
+    BROAD_JEFFERSONIAN_TRANSCRIPTION: "Broad Jeffersonian transcription",
+    NARROW_JEFFERSONIAN_TRANSCRIPTION: "Narrow Jeffersonian transcription",
+}
+
+TRANSCRIPTION_MODE_OUTPUT_SUFFIXES = {
+    VERBATIM_TRANSCRIPTION: "verbatim",
+    BROAD_JEFFERSONIAN_TRANSCRIPTION: "broad_jeffersonian",
+    NARROW_JEFFERSONIAN_TRANSCRIPTION: "narrow_jeffersonian",
+}
+
+
 @dataclass(frozen=True)
 class MediaRecord:
     path: Path
@@ -72,6 +89,7 @@ class TranscriptResult:
 class TranscriptionOptions:
     whisper_executable: str
     model_path: str
+    transcription_mode: str = VERBATIM_TRANSCRIPTION
     language_code: str = ""
     transcribe_section: bool = False
     start_time: str = ""
@@ -87,7 +105,23 @@ class TranscriptionOptions:
     export_mfa_phone_transcript: bool = False
     keep_temp_audio: bool = False
 
+    def selected_mode(self) -> str:
+        if self.transcription_mode not in TRANSCRIPTION_MODE_LABELS:
+            raise ValueError(f"Choose a valid transcription type: {self.transcription_mode}")
+        if self.transcription_mode == VERBATIM_TRANSCRIPTION and self.jeffersonian:
+            return NARROW_JEFFERSONIAN_TRANSCRIPTION if self.use_mfa_alignment else BROAD_JEFFERSONIAN_TRANSCRIPTION
+        return self.transcription_mode
+
+    @property
+    def needs_mfa_alignment(self) -> bool:
+        return self.selected_mode() == NARROW_JEFFERSONIAN_TRANSCRIPTION or self.use_mfa_alignment
+
+    @property
+    def is_jeffersonian(self) -> bool:
+        return self.selected_mode() in {BROAD_JEFFERSONIAN_TRANSCRIPTION, NARROW_JEFFERSONIAN_TRANSCRIPTION}
+
     def validate(self) -> tuple[int | None, int | None]:
+        mode = self.selected_mode()
         if not self.whisper_executable.strip():
             raise ValueError("Choose a local whisper.cpp executable.")
         if not Path(self.whisper_executable).expanduser().exists():
@@ -101,25 +135,25 @@ class TranscriptionOptions:
         if not 20 <= self.jeffersonian_line_width <= 200:
             raise ValueError("Jeffersonian line width must be between 20 and 200 characters.")
 
-        if self.use_mfa_alignment:
+        if mode == NARROW_JEFFERSONIAN_TRANSCRIPTION or self.use_mfa_alignment:
             if not self.mfa_executable.strip():
-                raise ValueError("Choose a local MFA executable before enabling heavy MFA alignment.")
+                raise ValueError("Choose a local MFA executable before enabling narrow Jeffersonian transcription.")
             mfa_path = Path(self.mfa_executable).expanduser()
             if not mfa_path.exists() and shutil.which(self.mfa_executable) is None:
                 raise ValueError("The selected MFA executable was not found.")
 
             if not self.mfa_acoustic_model.strip():
-                raise ValueError("Choose a local MFA acoustic model before enabling heavy MFA alignment.")
+                raise ValueError("Choose a local MFA acoustic model before enabling narrow Jeffersonian transcription.")
             if not Path(self.mfa_acoustic_model).expanduser().exists():
                 raise ValueError("The selected MFA acoustic model was not found.")
 
             if not self.mfa_dictionary.strip():
-                raise ValueError("Choose a local MFA pronunciation dictionary before enabling heavy MFA alignment.")
+                raise ValueError("Choose a local MFA pronunciation dictionary before enabling narrow Jeffersonian transcription.")
             if not Path(self.mfa_dictionary).expanduser().exists():
                 raise ValueError("The selected MFA pronunciation dictionary was not found.")
 
-        if self.export_mfa_phone_transcript and not self.use_mfa_alignment:
-            raise ValueError("Enable heavy MFA alignment before exporting an MFA phone-tier transcript.")
+        if self.export_mfa_phone_transcript and mode != NARROW_JEFFERSONIAN_TRANSCRIPTION:
+            raise ValueError("Choose narrow Jeffersonian transcription before exporting an MFA phone-tier transcript.")
 
         if self.transcribe_section:
             return validate_time_range(self.start_time, self.finish_time)

@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import os
+import platform
+import queue
 import re
 import shutil
 import subprocess
+import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Callable
@@ -33,6 +38,7 @@ class MfaAlignmentResult:
 
 TEXTGRID_VALUE_PATTERN = re.compile(r'^(?P<key>\w+)\s*=\s*(?P<value>.*)$')
 WORD_SPLIT_PATTERN = re.compile(r"\S+")
+MFA_LAUNCHER_FAILURE_PATTERNS = ("failed to create process",)
 
 
 def _unquote_textgrid_value(value: str) -> str:
@@ -138,8 +144,7 @@ def run_mfa_alignment(
     shutil.copy2(audio_path, corpus_audio)
     _write_lab_file(lab_file, transcript)
 
-    command = [
-        *_mfa_command_prefix(options.mfa_executable),
+    command_args = [
         "align",
         str(corpus_dir),
         str(Path(options.mfa_dictionary).expanduser()),
@@ -147,42 +152,104 @@ def run_mfa_alignment(
         str(output_dir),
         "--clean",
         "--overwrite",
+        "--single_speaker",
     ]
 
-    log_callback("Running optional HEAVY local MFA alignment. This can take noticeably longer.")
+    log_callback("Running narrow Jeffersonian local MFA alignment. This can take noticeably longer.")
     env = os.environ.copy()
     env["MFA_ROOT_DIR"] = str(MFA_ROOT_DIR)
-    mfa_path_parts = [
-        str(Path(options.mfa_executable).expanduser().parent.parent / "Library" / "bin"),
-        str(Path(options.mfa_executable).expanduser().parent),
-    ]
-    env["PATH"] = os.pathsep.join(mfa_path_parts) + os.pathsep + env.get("PATH", "")
+    env["PATH"] = os.pathsep.join(_mfa_path_parts(options.mfa_executable)) + os.pathsep + env.get("PATH", "")
+    command = [*_mfa_command_prefix(options.mfa_executable), *command_args]
+    return_code, output_lines = _run_streamed_mfa_process(command, env, log_callback, cancelled)
+    fallback_prefix = _mfa_module_command_prefix(options.mfa_executable)
+    used_fallback = False
+
+    def retry_with_module(reason: str) -> bool:
+        nonlocal return_code, output_lines, used_fallback
+        if fallback_prefix is None or used_fallback:
+            return False
+        log_callback(reason)
+        fallback_command = [*fallback_prefix, *command_args]
+        return_code, output_lines = _run_streamed_mfa_process(fallback_command, env, log_callback, cancelled)
+        used_fallback = True
+        return True
+
+    if return_code != 0 or _mfa_launcher_failed(output_lines):
+        retry_with_module("Direct MFA launch failed; retrying with Python module fallback.")
+
+    if return_code != 0:
+        detail = _last_output_summary(output_lines)
+        if detail:
+            raise RuntimeError(f"MFA alignment exited with code {return_code}. Last MFA output: {detail}")
+        raise RuntimeError(f"MFA alignment exited with code {return_code}.")
+
+    textgrid_path = _find_textgrid(output_dir)
+    if not textgrid_path and not used_fallback:
+        retry_with_module("MFA did not produce a TextGrid; retrying with Python module fallback.")
+        if return_code != 0:
+            detail = _last_output_summary(output_lines)
+            if detail:
+                raise RuntimeError(f"MFA alignment exited with code {return_code}. Last MFA output: {detail}")
+            raise RuntimeError(f"MFA alignment exited with code {return_code}.")
+        textgrid_path = _find_textgrid(output_dir)
+
+    if not textgrid_path:
+        raise RuntimeError("MFA alignment did not create a TextGrid file.")
+    parsed = parse_textgrid(textgrid_path)
+    log_callback(f"MFA alignment produced {len(parsed.words)} word interval(s) and {len(parsed.phones)} phone interval(s).")
+    return parsed
+
+
+def _run_streamed_mfa_process(
+    command: list[str],
+    env: dict[str, str],
+    log_callback: Callable[[str], None],
+    cancelled: Callable[[], bool],
+) -> tuple[int, list[str]]:
+    log_callback("Running MFA: " + subprocess.list2cmdline(command))
     process = subprocess.Popen(
         command,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         text=True,
         encoding="utf-8",
         errors="replace",
         env=env,
     )
 
+    output_lines: list[str] = []
+    output_queue: queue.Queue[str] = queue.Queue()
+
+    def read_output() -> None:
+        if process.stdout is None:
+            return
+        for line in process.stdout:
+            output_queue.put(line.rstrip())
+
+    reader = threading.Thread(target=read_output, daemon=True)
+    reader.start()
+
+    def drain_output() -> None:
+        while True:
+            try:
+                line = output_queue.get_nowait()
+            except queue.Empty:
+                return
+            if line.strip():
+                output_lines.append(line)
+                log_callback(line)
+
     while process.poll() is None:
+        drain_output()
         if cancelled():
             process.terminate()
             raise RuntimeError("MFA alignment stopped by user.")
         time.sleep(0.2)
 
     process.wait()
-    if process.returncode != 0:
-        raise RuntimeError(f"MFA alignment exited with code {process.returncode}.")
-
-    textgrid_path = _find_textgrid(output_dir)
-    if not textgrid_path:
-        raise RuntimeError("MFA alignment did not create a TextGrid file.")
-    parsed = parse_textgrid(textgrid_path)
-    log_callback(f"MFA alignment produced {len(parsed.words)} word interval(s) and {len(parsed.phones)} phone interval(s).")
-    return parsed
+    reader.join(timeout=1)
+    drain_output()
+    return int(process.returncode or 0), output_lines
 
 
 def _fallback_word_tokens(segment: TranscriptSegment) -> tuple[WordToken, ...]:
@@ -192,7 +259,12 @@ def _fallback_word_tokens(segment: TranscriptSegment) -> tuple[WordToken, ...]:
 
 
 def apply_mfa_word_alignment(result: TranscriptResult, aligned_words: tuple[AlignedInterval, ...]) -> TranscriptResult:
-    """Return a transcript whose word and segment timings come from MFA intervals."""
+    """Return a transcript with MFA timing layered onto the existing words.
+
+    MFA is a timing refinement pass. It must never remove words that Whisper
+    found in the broad transcript, because narrow Jeffersonian output is built
+    on top of that broad transcript.
+    """
     if not aligned_words:
         return result
 
@@ -201,24 +273,39 @@ def apply_mfa_word_alignment(result: TranscriptResult, aligned_words: tuple[Alig
     for segment in result.segments:
         source_words = _fallback_word_tokens(segment)
         new_words: list[WordToken] = []
+        aligned_count = 0
         for word in source_words:
-            if aligned_index >= len(aligned_words):
-                break
-            aligned = aligned_words[aligned_index]
-            aligned_index += 1
-            new_words.append(
-                WordToken(
-                    text=word.text,
-                    start=aligned.start,
-                    end=aligned.end,
-                    speaker=word.speaker or segment.speaker,
-                    confidence=word.confidence,
+            if aligned_index < len(aligned_words):
+                aligned = aligned_words[aligned_index]
+                aligned_index += 1
+                aligned_count += 1
+                new_words.append(
+                    WordToken(
+                        text=word.text,
+                        start=aligned.start,
+                        end=aligned.end,
+                        speaker=word.speaker or segment.speaker,
+                        confidence=word.confidence,
+                    )
                 )
-            )
+            else:
+                new_words.append(
+                    WordToken(
+                        text=word.text,
+                        start=word.start,
+                        end=word.end,
+                        speaker=word.speaker or segment.speaker,
+                        confidence=word.confidence,
+                    )
+                )
 
         if new_words:
-            start = new_words[0].start
-            end = new_words[-1].end
+            if aligned_count == len(source_words):
+                start = new_words[0].start
+                end = new_words[-1].end
+            else:
+                start = segment.start if segment.start is not None else new_words[0].start
+                end = segment.end if segment.end is not None else new_words[-1].end
             words = tuple(new_words)
         else:
             start = segment.start
@@ -282,9 +369,69 @@ def phone_tier_lines(result: TranscriptResult, phones: tuple[AlignedInterval, ..
 
 
 def _mfa_command_prefix(mfa_executable: str) -> list[str]:
+    return [mfa_executable]
+
+
+def _mfa_launcher_failed(output_lines: list[str]) -> bool:
+    for line in output_lines:
+        lower = line.lower()
+        if any(pattern in lower for pattern in MFA_LAUNCHER_FAILURE_PATTERNS):
+            return True
+    return False
+
+
+def _mfa_module_command_prefix(mfa_executable: str) -> list[str] | None:
     path = Path(mfa_executable).expanduser()
     if path.name.lower() == "mfa.exe" and path.parent.name.lower() == "scripts":
         python = path.parent.parent / "python.exe"
         if python.exists():
             return [str(python), "-m", "montreal_forced_aligner.command_line.mfa"]
-    return [mfa_executable]
+    return None
+
+
+def _mfa_path_parts(mfa_executable: str) -> list[str]:
+    executable = Path(mfa_executable).expanduser()
+    env_dir = executable.parent.parent
+    library_bin = env_dir / "Library" / "bin"
+    scripts = executable.parent
+    return [
+        str(_windows_no_space_alias(library_bin)),
+        str(scripts),
+        str(env_dir / "bin"),
+        str(env_dir),
+    ]
+
+
+def _windows_no_space_alias(target: Path) -> Path:
+    """Return a no-space junction to target on Windows when MFA needs one."""
+    if platform.system() != "Windows" or not target.exists() or " " not in str(target):
+        return target
+
+    base = Path(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()) / "QuickFixApps" / "mfa-paths"
+    digest = hashlib.sha1(str(target.resolve()).encode("utf-8")).hexdigest()[:12]
+    alias = base / f"bin-{digest}"
+    if " " in str(alias):
+        return target
+    if alias.exists():
+        return alias
+
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        completed = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(alias), str(target)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except OSError:
+        return target
+    if completed.returncode == 0 and alias.exists():
+        return alias
+    return target
+
+
+def _last_output_summary(lines: list[str], max_lines: int = 6) -> str:
+    useful = [line.strip() for line in lines if line.strip()]
+    return " | ".join(useful[-max_lines:])

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import socket
 import struct
 import sys
 import tempfile
@@ -16,16 +17,37 @@ from unittest.mock import patch
 from quickfix_sibling_apps import quickfix_app_roots
 from transcription.acoustic_analysis import apply_local_acoustic_annotations
 from transcription.acoustic_analysis import _merge_wrapped_stretches
+from transcription.batch_processor import TranscriptionBatchProcessor
+from transcription.cpu.vad import energy_vad
 from transcription.engine import parse_whisper_json
+from transcription.event_engine import suggestions_for_transcript
 from transcription.file_utils import collect_media_files, output_directory_for, unique_output_path
 from transcription.languages import LANGUAGE_CHOICES
-from transcription.jeffersonian import format_simple_jeffersonian
-from transcription.media import build_audio_extract_command
+from transcription.jeffersonian import BROAD_JEFFERSONIAN_PROFILE, NARROW_JEFFERSONIAN_PROFILE, format_simple_jeffersonian
+from transcription.media import build_audio_extract_command, build_channel_extract_command
 from transcription.mfa_alignment import AlignedInterval, apply_mfa_word_alignment, parse_textgrid, phone_tier_lines
 from transcription.mfa_presets import DEFAULT_SETUP_MFA_PRESET_IDS, MFA_PRESETS, mfa_preset_by_id, preset_for_language_code
-from transcription.models import TranscriptResult, TranscriptSegment, TranscriptionOptions, WordToken
+from transcription.models import (
+    BROAD_JEFFERSONIAN_TRANSCRIPTION,
+    NARROW_JEFFERSONIAN_TRANSCRIPTION,
+    VERBATIM_TRANSCRIPTION,
+    MediaRecord,
+    TranscriptResult,
+    TranscriptSegment,
+    TranscriptionOptions,
+    WordToken,
+)
 from transcription.model_setup import sha1_file, sha256_file
+from transcription.offline_guard import offline_processing_guard, reject_remote_source
+from transcription.project_builder import build_project_from_transcript
+from transcription.project_exports import export_project_docx, export_project_pdf, export_project_txt
+from transcription.project_renderer import iter_project_suggestions, render_confirmed_jefferson_lines
+from transcription.project_review import set_candidate_status
+from transcription.project_store import load_project, save_project
+from transcription.overlap_analysis import channels_are_distinct, has_cross_speaker_overlap, merge_channel_results
 from transcription import dependencies as transcription_dependencies
+from transcription import mfa_alignment as transcription_mfa_alignment
+from transcription import mfa_setup as transcription_mfa_setup
 from transcription.rtf_exporter import rtf_escape, transcript_lines, write_rtf
 from transcription.time_utils import validate_time_range
 
@@ -57,6 +79,74 @@ class MediaCommandTests(unittest.TestCase):
         self.assertIn("-ar", command)
         self.assertIn("16000", command)
         self.assertEqual(command[-1], "output.wav")
+
+    def test_build_channel_extract_command_uses_pan_filter(self) -> None:
+        command = build_channel_extract_command("ffmpeg", Path("input.wav"), Path("right.wav"), 1)
+        self.assertIn("-af", command)
+        self.assertIn("pan=mono|c0=c1", command)
+        self.assertEqual(command[-1], "right.wav")
+
+
+class OverlapAnalysisTests(unittest.TestCase):
+    def _write_mono_wav(self, path: Path, values: list[int], sample_rate: int = 16000) -> None:
+        with wave.open(str(path), "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(sample_rate)
+            handle.writeframes(b"".join(struct.pack("<h", value) for value in values))
+
+    def test_channel_distinct_detection_rejects_duplicate_channels(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            sample_rate = 16000
+            values = [
+                int(0.2 * math.sin(2 * math.pi * 220.0 * (index / sample_rate)) * 32767)
+                for index in range(sample_rate // 4)
+            ]
+            left = root / "left.wav"
+            right = root / "right.wav"
+            self._write_mono_wav(left, values)
+            self._write_mono_wav(right, values)
+            self.assertFalse(channels_are_distinct(left, right))
+
+    def test_channel_distinct_detection_accepts_different_channels(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            sample_rate = 16000
+            left_values = [
+                int(0.2 * math.sin(2 * math.pi * 220.0 * (index / sample_rate)) * 32767)
+                for index in range(sample_rate // 4)
+            ]
+            right_values = [
+                int(0.2 * math.sin(2 * math.pi * 440.0 * (index / sample_rate)) * 32767)
+                for index in range(sample_rate // 4)
+            ]
+            left = root / "left.wav"
+            right = root / "right.wav"
+            self._write_mono_wav(left, left_values)
+            self._write_mono_wav(right, right_values)
+            self.assertTrue(channels_are_distinct(left, right))
+
+    def test_merge_channel_results_preserves_cross_speaker_overlap(self) -> None:
+        source = Path("sample.wav")
+        fallback = TranscriptResult(source_path=source, language="en", segments=[])
+        left = TranscriptResult(
+            source_path=source,
+            language="en",
+            segments=[TranscriptSegment("left speaker", start=0.0, end=1.0, speaker="old")],
+        )
+        right = TranscriptResult(
+            source_path=source,
+            language="en",
+            segments=[TranscriptSegment("right speaker", start=0.5, end=1.2, speaker="old")],
+        )
+        merged = merge_channel_results(source, fallback, [("channel_1", left), ("channel_2", right)])
+        self.assertIsNotNone(merged)
+        assert merged is not None
+        self.assertTrue(has_cross_speaker_overlap(merged))
+        self.assertEqual([segment.speaker for segment in merged.segments], ["channel_1", "channel_2"])
+        lines = format_simple_jeffersonian(merged, profile=BROAD_JEFFERSONIAN_PROFILE)
+        self.assertEqual(lines[0].index("["), lines[1].index("["))
 
 
 class SiblingAppDiscoveryTests(unittest.TestCase):
@@ -116,6 +206,14 @@ class OutputPathTests(unittest.TestCase):
             ignored = ignored_dir / "ignored.wav"
             ignored.write_bytes(b"audio")
             self.assertEqual(collect_media_files([root]), [keep])
+
+    def test_collect_media_files_accepts_aac(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "interview.aac"
+            source.write_bytes(b"audio")
+
+            self.assertEqual(collect_media_files([root]), [source])
 
 
 class RtfTests(unittest.TestCase):
@@ -218,7 +316,7 @@ class JeffersonianTests(unittest.TestCase):
             lines,
             [
                 "1   SP1:        one two three four five six seven eight nine ten",
-                "2   SP1:        eleven twelve thirteen",
+                "2               eleven twelve thirteen",
             ],
         )
         for line in lines:
@@ -243,11 +341,57 @@ class JeffersonianTests(unittest.TestCase):
             lines,
             [
                 "1   SP1:        one two three four five",
-                "2   SP1:        six seven eight",
+                "2               six seven eight",
             ],
         )
         for line in lines:
             self.assertLessEqual(len(line[16:]), 25)
+
+    def test_jeffersonian_repeats_speaker_only_for_new_turns_not_wrapped_lines(self) -> None:
+        result = TranscriptResult(
+            source_path=Path("sample.wav"),
+            language="en",
+            segments=[
+                TranscriptSegment(
+                    "one two three four five six",
+                    start=0.0,
+                    end=1.0,
+                    speaker="one",
+                ),
+                TranscriptSegment(
+                    "new turn same speaker",
+                    start=1.4,
+                    end=2.0,
+                    speaker="one",
+                ),
+            ],
+        )
+        self.assertEqual(
+            format_simple_jeffersonian(result, max_text_columns=18),
+            [
+                "1   SP1:        one two three four",
+                "2               five six",
+                "3   SP1:        (0.4) new turn",
+                "4               same speaker",
+            ],
+        )
+
+    def test_jeffersonian_marks_latching_on_no_gap_speaker_change(self) -> None:
+        result = TranscriptResult(
+            source_path=Path("sample.wav"),
+            language="en",
+            segments=[
+                TranscriptSegment("right", start=0.0, end=0.5, speaker="one"),
+                TranscriptSegment("yes", start=0.5, end=0.9, speaker="two"),
+            ],
+        )
+        self.assertEqual(
+            format_simple_jeffersonian(result),
+            [
+                "1   SP1:        right=",
+                "2   SP2:        =yes",
+            ],
+        )
 
     def test_jeffersonian_strips_asr_punctuation(self) -> None:
         result = TranscriptResult(
@@ -319,6 +463,50 @@ class JeffersonianTests(unittest.TestCase):
         )
         self.assertEqual(
             format_simple_jeffersonian(result),
+            ["1   SP1:        (maybe) clear"],
+        )
+
+    def test_broad_jeffersonian_skips_voice_quality_annotations(self) -> None:
+        result = TranscriptResult(
+            source_path=Path("sample.wav"),
+            language="en",
+            segments=[
+                TranscriptSegment(
+                    "\N{DEGREE SIGN}wo::rd\N{DEGREE SIGN} >fast< [cough]",
+                    start=0.0,
+                    end=1.0,
+                    speaker="one",
+                )
+            ],
+        )
+        self.assertEqual(
+            format_simple_jeffersonian(result, profile=BROAD_JEFFERSONIAN_PROFILE),
+            ["1   SP1:        word fast cough"],
+        )
+
+    def test_broad_jeffersonian_does_not_mark_low_confidence_words(self) -> None:
+        result = TranscriptResult(
+            source_path=Path("sample.wav"),
+            language="en",
+            segments=[
+                TranscriptSegment(
+                    "maybe clear",
+                    start=0.0,
+                    end=1.0,
+                    speaker="one",
+                    words=(
+                        WordToken("maybe", 0.0, 0.4, "one", confidence=0.12),
+                        WordToken("clear", 0.4, 0.8, "one", confidence=0.92),
+                    ),
+                )
+            ],
+        )
+        self.assertEqual(
+            format_simple_jeffersonian(result, profile=BROAD_JEFFERSONIAN_PROFILE),
+            ["1   SP1:        maybe clear"],
+        )
+        self.assertEqual(
+            format_simple_jeffersonian(result, profile=NARROW_JEFFERSONIAN_PROFILE),
             ["1   SP1:        (maybe) clear"],
         )
 
@@ -457,6 +645,84 @@ class WhisperJsonTests(unittest.TestCase):
 
 
 class MfaAlignmentTests(unittest.TestCase):
+    def test_mfa_launch_prefers_executable_over_python_module(self) -> None:
+        executable = r"C:\QuickFixAppDependencies\.tools\mfa\env\Scripts\mfa.exe"
+        self.assertEqual(transcription_mfa_alignment._mfa_command_prefix(executable), [executable])
+        self.assertEqual(transcription_mfa_setup._mfa_command_prefix(executable), [executable])
+
+    def test_mfa_launcher_failure_message_triggers_retry_path(self) -> None:
+        self.assertTrue(transcription_mfa_alignment._mfa_launcher_failed(["failed to create process."]))
+        self.assertTrue(transcription_mfa_setup._mfa_launcher_failed_line("failed to create process."))
+        self.assertFalse(transcription_mfa_alignment._mfa_launcher_failed(["Alignment complete."]))
+        self.assertFalse(transcription_mfa_setup._mfa_launcher_failed_line("Alignment complete."))
+
+    def test_mfa_alignment_retries_module_when_direct_launcher_fails_silently(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            audio = root / "sample.wav"
+            audio.write_bytes(b"local wav placeholder")
+            env_dir = root / "mfa-env"
+            scripts_dir = env_dir / "Scripts"
+            scripts_dir.mkdir(parents=True)
+            mfa = scripts_dir / "mfa.exe"
+            python = env_dir / "python.exe"
+            dictionary = root / "english.dict"
+            acoustic = root / "english.zip"
+            for path in (mfa, python, dictionary, acoustic):
+                path.write_text("placeholder", encoding="utf-8")
+
+            transcript = TranscriptResult(
+                source_path=audio,
+                language="en",
+                segments=[TranscriptSegment("hello", start=0.0, end=0.6, speaker="one")],
+            )
+            options = TranscriptionOptions(
+                whisper_executable=str(root / "whisper"),
+                model_path=str(root / "model.bin"),
+                mfa_executable=str(mfa),
+                mfa_dictionary=str(dictionary),
+                mfa_acoustic_model=str(acoustic),
+            )
+            calls: list[list[str]] = []
+
+            def fake_run(command: list[str], _env: dict[str, str], _log, _cancelled) -> tuple[int, list[str]]:
+                calls.append(command)
+                if len(calls) == 1:
+                    return 0, ["failed to create process."]
+                align_index = command.index("align")
+                output_dir = Path(command[align_index + 4])
+                output_dir.mkdir(parents=True, exist_ok=True)
+                (output_dir / "sample.TextGrid").write_text(
+                    """
+File type = "ooTextFile"
+Object class = "TextGrid"
+item [1]:
+    class = "IntervalTier"
+    name = "words"
+    intervals [1]:
+        xmin = 0.1
+        xmax = 0.5
+        text = "hello"
+""",
+                    encoding="utf-8",
+                )
+                return 0, ["done"]
+
+            with patch.object(transcription_mfa_alignment, "_run_streamed_mfa_process", side_effect=fake_run):
+                aligned = transcription_mfa_alignment.run_mfa_alignment(
+                    audio,
+                    transcript,
+                    root / "work",
+                    options,
+                    lambda _message: None,
+                    lambda: False,
+                )
+
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(calls[0][0], str(mfa))
+            self.assertEqual(calls[1][:3], [str(python), "-m", "montreal_forced_aligner.command_line.mfa"])
+            self.assertEqual(aligned.words, (AlignedInterval("hello", 0.1, 0.5),))
+
     def test_parse_textgrid_word_and_phone_intervals(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "sample.TextGrid"
@@ -508,6 +774,44 @@ item [2]:
         self.assertEqual(segment.words[0].text, "hello")
         self.assertEqual(segment.words[0].start, 0.1)
         self.assertEqual(segment.words[1].end, 1.0)
+
+    def test_apply_mfa_word_alignment_keeps_unaligned_broad_words(self) -> None:
+        result = TranscriptResult(
+            source_path=Path("sample.wav"),
+            language="en",
+            segments=[
+                TranscriptSegment(
+                    "okay let us see you can hear it",
+                    start=0.0,
+                    end=3.0,
+                    speaker="one",
+                    words=(
+                        WordToken("okay", 0.0, 0.4, "one"),
+                        WordToken("let", 0.4, 0.7, "one"),
+                        WordToken("us", 0.7, 0.9, "one"),
+                        WordToken("see", 0.9, 1.1, "one"),
+                        WordToken("you", 1.1, 1.3, "one"),
+                        WordToken("can", 1.3, 1.5, "one"),
+                        WordToken("hear", 1.5, 1.8, "one"),
+                        WordToken("it", 1.8, 2.0, "one"),
+                    ),
+                )
+            ],
+        )
+        aligned = apply_mfa_word_alignment(
+            result,
+            (
+                AlignedInterval("okay", 0.05, 0.35),
+                AlignedInterval("let", 0.45, 0.65),
+                AlignedInterval("us", 0.70, 0.85),
+            ),
+        )
+        segment = aligned.segments[0]
+        self.assertEqual([word.text for word in segment.words], ["okay", "let", "us", "see", "you", "can", "hear", "it"])
+        self.assertEqual(segment.words[0].start, 0.05)
+        self.assertEqual(segment.words[3].text, "see")
+        self.assertEqual(segment.words[3].start, 0.9)
+        self.assertEqual(segment.end, 3.0)
 
     def test_phone_tier_lines_use_sp_labels_and_phone_symbols(self) -> None:
         result = TranscriptResult(
@@ -601,6 +905,187 @@ class AcousticAnalysisTests(unittest.TestCase):
             self.assertIn("LOUD", text)
 
 
+class ProjectWorkflowTests(unittest.TestCase):
+    def _sample_result(self, source: Path) -> TranscriptResult:
+        return TranscriptResult(
+            source_path=source,
+            language="en",
+            segments=[
+                TranscriptSegment(
+                    "maybe pause",
+                    start=0.0,
+                    end=0.8,
+                    speaker="one",
+                    words=(
+                        WordToken("maybe", 0.0, 0.2, "one", confidence=0.1),
+                        WordToken("pause", 0.4, 0.6, "one", confidence=0.9),
+                    ),
+                ),
+                TranscriptSegment(
+                    "same time",
+                    start=0.7,
+                    end=1.2,
+                    speaker="two",
+                    words=(
+                        WordToken("same", 0.7, 0.9, "two", confidence=0.8),
+                        WordToken("time", 0.9, 1.2, "two", confidence=0.8),
+                    ),
+                ),
+            ],
+        )
+
+    def test_project_save_load_preserves_nested_review_state(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "sample.wav"
+            source.write_bytes(b"audio")
+            project = build_project_from_transcript(source, self._sample_result(source), workspace=root / "project", copy_source=False)
+            path = save_project(project, root / "project" / "sample.qftproj")
+
+            loaded = load_project(path)
+            self.assertEqual(loaded.schema_version, 1)
+            self.assertEqual(loaded.recordings[0].segments[0].speaker_label, "SP1")
+            self.assertEqual(loaded.recordings[0].segments[0].tokens[0].corrected_text, "maybe")
+            self.assertTrue(loaded.recordings[0].segments[0].candidate_annotations)
+
+    def test_project_candidates_include_uncertainty_pause_and_overlap(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "sample.wav"
+            source.write_bytes(b"audio")
+            result = self._sample_result(source)
+            project = build_project_from_transcript(source, result, workspace=Path(folder) / "project", copy_source=False)
+
+            kinds = {suggestion.kind for suggestion in iter_project_suggestions(project, status=None)}
+            self.assertIn("uncertain_word", kinds)
+            self.assertIn("inline_pause", kinds)
+            self.assertIn("overlap", kinds)
+            self.assertIn("overlap", {suggestion.kind for suggestion in suggestions_for_transcript(result)})
+
+    def test_pending_candidates_are_not_final_until_confirmed(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "sample.wav"
+            source.write_bytes(b"audio")
+            project = build_project_from_transcript(source, self._sample_result(source), workspace=Path(folder) / "project", copy_source=False)
+            overlap = next(suggestion for suggestion in iter_project_suggestions(project, status=None) if suggestion.kind == "overlap")
+
+            self.assertFalse(any("[ ]" in line for line in render_confirmed_jefferson_lines(project)))
+            confirmed = set_candidate_status(project, overlap.id, "confirmed")
+            self.assertTrue(any("[ ]" in line for line in render_confirmed_jefferson_lines(confirmed)))
+            rejected = set_candidate_status(confirmed, overlap.id, "rejected")
+            self.assertFalse(any("[ ]" in line for line in render_confirmed_jefferson_lines(rejected)))
+            self.assertGreaterEqual(len(rejected.edit_history), 2)
+
+    def test_project_exports_are_local_files(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "sample.wav"
+            source.write_bytes(b"audio")
+            project = build_project_from_transcript(source, self._sample_result(source), workspace=root / "project", copy_source=False)
+
+            txt = export_project_txt(project, root / "out.txt")
+            docx = export_project_docx(project, root / "out.docx")
+            pdf = export_project_pdf(project, root / "out.pdf")
+            self.assertTrue(txt.read_text(encoding="utf-8").startswith("1"))
+            self.assertEqual(docx.read_bytes()[:2], b"PK")
+            self.assertTrue(pdf.read_bytes().startswith(b"%PDF"))
+
+    def test_offline_guard_rejects_remote_sources_and_blocks_python_sockets(self) -> None:
+        reject_remote_source(Path(r"C:\local\sample.wav"))
+        reject_remote_source(r"C:\local\sample.wav")
+        with self.assertRaises(ValueError):
+            reject_remote_source("https://example.com/audio.wav")
+        with offline_processing_guard():
+            with self.assertRaises(RuntimeError):
+                socket.create_connection(("127.0.0.1", 9), timeout=0.01)
+
+    def test_energy_vad_detects_local_speech_region(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            wav_path = Path(folder) / "vad.wav"
+            sample_rate = 16000
+            samples: list[int] = []
+            for _ in range(int(0.2 * sample_rate)):
+                samples.append(0)
+            for index in range(int(0.3 * sample_rate)):
+                sample = 0.15 * math.sin(2 * math.pi * 220.0 * (index / sample_rate))
+                samples.append(int(sample * 32767))
+            for _ in range(int(0.2 * sample_rate)):
+                samples.append(0)
+            with wave.open(str(wav_path), "wb") as handle:
+                handle.setnchannels(1)
+                handle.setsampwidth(2)
+                handle.setframerate(sample_rate)
+                handle.writeframes(b"".join(struct.pack("<h", sample) for sample in samples))
+
+            regions = energy_vad(wav_path)
+            self.assertEqual(len(regions), 1)
+            self.assertGreaterEqual(regions[0].start, 0.18)
+            self.assertLessEqual(regions[0].end, 0.55)
+
+
+class BatchOutputTests(unittest.TestCase):
+    def test_batch_processor_writes_only_selected_visible_rtf(self) -> None:
+        class FakeRunner:
+            ffmpeg_path = "ffmpeg"
+
+            def run(self, command, _log_callback, _cancelled) -> int:
+                Path(command[-1]).write_bytes(b"wav")
+                return 0
+
+            def terminate(self) -> None:
+                return None
+
+        class FakeEngine:
+            def __init__(self, _executable: str, _model_path: str) -> None:
+                return None
+
+            def terminate(self) -> None:
+                return None
+
+            def transcribe(self, _audio_path, source_path, _work_dir, _language_code, _log_callback, _cancelled):
+                return TranscriptResult(
+                    source_path=source_path,
+                    language="en",
+                    segments=[
+                        TranscriptSegment(
+                            "hello there",
+                            start=0.0,
+                            end=0.8,
+                            speaker="one",
+                            words=(WordToken("hello", 0.0, 0.3, "one"), WordToken("there", 0.3, 0.8, "one")),
+                        )
+                    ],
+                )
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "sample.wav"
+            whisper = root / "whisper"
+            model = root / "model.bin"
+            for path in (source, whisper, model):
+                path.write_bytes(b"local")
+            options = TranscriptionOptions(
+                whisper_executable=str(whisper),
+                model_path=str(model),
+                transcription_mode=BROAD_JEFFERSONIAN_TRANSCRIPTION,
+            )
+            record = MediaRecord(source, "00:01", "Audio", source.stat().st_size)
+
+            with patch("transcription.batch_processor.WhisperCppEngine", FakeEngine), patch(
+                "transcription.batch_processor.apply_local_acoustic_annotations",
+                side_effect=AssertionError("Broad Jeffersonian should skip acoustic voice-quality analysis."),
+            ), patch(
+                "transcription.batch_processor.run_mfa_alignment",
+                side_effect=AssertionError("Broad Jeffersonian should skip MFA alignment."),
+            ):
+                worker = TranscriptionBatchProcessor([record], options, FakeRunner())
+                worker.run()
+
+            output_dir = root / "QuickFixTranscription"
+            visible_outputs = sorted(path.name for path in output_dir.iterdir() if path.is_file())
+            self.assertEqual(visible_outputs, ["sample_broad_jeffersonian.rtf"])
+            self.assertFalse((output_dir / ".tmp").exists())
+
+
 class ModelSetupTests(unittest.TestCase):
     def test_mfa_preset_path_lookup_uses_selected_model_names(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -632,6 +1117,32 @@ class ModelSetupTests(unittest.TestCase):
             )
             with self.assertRaises(ValueError):
                 options.validate()
+
+    def test_transcription_options_modes_select_broad_and_narrow(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            whisper = root / "whisper"
+            model = root / "model.bin"
+            for path in (whisper, model):
+                path.write_text("local", encoding="utf-8")
+
+            broad = TranscriptionOptions(
+                whisper_executable=str(whisper),
+                model_path=str(model),
+                transcription_mode=BROAD_JEFFERSONIAN_TRANSCRIPTION,
+            )
+            self.assertEqual(broad.selected_mode(), BROAD_JEFFERSONIAN_TRANSCRIPTION)
+            self.assertFalse(broad.needs_mfa_alignment)
+
+            narrow = TranscriptionOptions(
+                whisper_executable=str(whisper),
+                model_path=str(model),
+                transcription_mode=NARROW_JEFFERSONIAN_TRANSCRIPTION,
+            )
+            self.assertEqual(narrow.selected_mode(), NARROW_JEFFERSONIAN_TRANSCRIPTION)
+            self.assertTrue(narrow.needs_mfa_alignment)
+            with self.assertRaises(ValueError):
+                narrow.validate()
 
     def test_transcription_options_validate_local_mfa_assets_when_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

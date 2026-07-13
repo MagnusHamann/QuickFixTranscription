@@ -72,6 +72,15 @@ function Find-Python {
         }
     }
 
+    foreach ($localCandidate in @(
+        (Join-Path $dependencyRoot ".tools\python\python.exe"),
+        (Join-Path $dependencyRoot ".tools\mfa\env\python.exe")
+    )) {
+        if (Test-PythonExecutable -Python $localCandidate) {
+            return $localCandidate
+        }
+    }
+
     $py = Get-Command py -ErrorAction SilentlyContinue
     if ($py) {
         try {

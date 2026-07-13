@@ -16,7 +16,7 @@ class DragDropWidget(QWidget):
         self.setAcceptDrops(True)
         self.setObjectName("DropZone")
 
-        self.label = QLabel(label_text or "Drop video files or folders here\nSupported: MP4, MOV, MKV, AVI")
+        self.label = QLabel(label_text or "Drop audio/video files or folders here\nSupported: MP4, MOV, MKV, AVI, MP3, WAV, M4A, AAC, FLAC")
         self.label.setAlignment(Qt.AlignCenter)
 
         layout = QVBoxLayout(self)

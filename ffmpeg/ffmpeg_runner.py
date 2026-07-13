@@ -60,12 +60,15 @@ class FFmpegRunner:
             raise RuntimeError(completed.stderr.strip() or "FFprobe failed.")
         parsed = json.loads(completed.stdout)
 
-        video_stream = next((stream for stream in parsed.get("streams", []) if stream.get("codec_type") == "video"), {})
+        streams = parsed.get("streams", [])
+        video_stream = next((stream for stream in streams if stream.get("codec_type") == "video"), {})
+        audio_stream = next((stream for stream in streams if stream.get("codec_type") == "audio"), {})
         duration = parsed.get("format", {}).get("duration") or video_stream.get("duration")
         return {
             "duration": float(duration) if duration else None,
             "width": video_stream.get("width"),
             "height": video_stream.get("height"),
+            "audio_channels": audio_stream.get("channels"),
         }
 
     def run(

@@ -72,7 +72,7 @@ class TranscriptionWindow(QMainWindow):
         self.runner = FFmpegRunner()
 
         self.drop_zone = DragDropWidget(
-            "Drop audio/video files or folders here\nSupported: MP4, MOV, MKV, AVI, MP3, WAV, M4A, FLAC"
+            "Drop audio/video files or folders here\nSupported: MP4, MOV, MKV, AVI, MP3, WAV, M4A, AAC, FLAC"
         )
         self.table = QTableWidget(0, 4)
         self.options_panel = TranscriptionOptionsPanel()
@@ -106,11 +106,11 @@ class TranscriptionWindow(QMainWindow):
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setAlternatingRowColors(True)
 
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        left_layout.addWidget(self.drop_zone)
-        left_layout.addWidget(QLabel("Detected media"))
-        left_layout.addWidget(self.table)
+        ingest = QWidget()
+        ingest_layout = QVBoxLayout(ingest)
+        ingest_layout.addWidget(self.drop_zone)
+        ingest_layout.addWidget(QLabel("Detected media"))
+        ingest_layout.addWidget(self.table)
 
         options_scroll = QScrollArea()
         options_scroll.setWidgetResizable(True)
@@ -120,7 +120,7 @@ class TranscriptionWindow(QMainWindow):
         options_scroll.setMinimumWidth(360)
 
         splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(left)
+        splitter.addWidget(ingest)
         splitter.addWidget(options_scroll)
         splitter.setStretchFactor(0, 4)
         splitter.setStretchFactor(1, 1)

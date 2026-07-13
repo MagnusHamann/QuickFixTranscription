@@ -7,17 +7,16 @@ The app uses local FFmpeg extraction plus a local `whisper.cpp` executable and l
 ## Features
 
 - Drag-and-drop audio/video files or folders.
-- Batch process common media files including `.mp4`, `.mov`, `.mkv`, `.avi`, `.mp3`, `.wav`, `.m4a`, and `.flac`.
+- Batch process common media files including `.mp4`, `.mov`, `.mkv`, `.avi`, `.mp3`, `.wav`, `.m4a`, `.aac`, and `.flac`.
 - Optional start and finish time selection using local FFmpeg segment extraction.
 - Language dropdown with `Auto-detect` and common Whisper language options.
 - Local `whisper.cpp` executable and local model path selection.
-- `.rtf` transcript export into `QuickFixTranscription` beside each source file.
-- Optional simple Jeffersonian `.rtf` output with speaker lines, overlap brackets, and timed silences.
-- Local acoustic Jeffersonian cues for loud/quiet speech, pitch shifts, speaking rate, likely prolongation, and possible cut-offs when word timing is available.
-- Supported non-word sound conventions for Jeffersonian output, including `((cough))`, `((clears throat))`, `.snih.`, `((sigh))`, `.mt.`, `.dt.`, `.hhh`, `hhh`, `uhm`, `eh`, `hm`, `mm`, `mhm`, and uncertain `(     )`.
-- Optional HEAVY Montreal Forced Aligner pass for slower local word/phone alignment and TextGrid export, with setup installing local UK English and US English MFA presets when possible.
+- Exactly one selected `.rtf` transcript export into `QuickFixTranscription` beside each source file.
+- Transcription type selector: verbatim transcription, broad Jeffersonian transcription, or narrow Jeffersonian transcription.
+- Broad Jeffersonian transcription is the faster temporal/sequential pass: speaker sequence, local channel-based overlap when channels are distinct, latching, and timed pauses.
+- Narrow Jeffersonian transcription uses a slower local Montreal Forced Aligner pass plus local acoustic analysis for voice-quality and prosodic detail. MFA artifacts stay temporary and are not exported as extra files.
+- Narrow Jeffersonian voice-quality cues include loud/quiet speech, pitch shifts, speaking rate, likely prolongation, possible cut-offs, supported non-word sounds, and uncertainty markers.
 - Optional IPA-capable Charis font for regular and Jeffersonian RTF export.
-- Optional MFA phone-tier RTF export for IPA-style symbols when the chosen local MFA dictionary/model uses them.
 
 ## Processing Privacy Rule
 
@@ -37,18 +36,24 @@ No cloud transcription, hosted Whisper service, OpenAI API, remote diarization, 
 
 ## Jeffersonian Output
 
-The Jeffersonian output is generated locally from transcript timing and acoustic analysis of the temporary WAV file.
+The selected output is generated locally. Verbatim mode writes a regular transcript. Broad Jeffersonian mode formats local Whisper timing plus local channel-overlap evidence into temporal/sequential Jeffersonian notation only. Narrow Jeffersonian mode starts from that broad result, then adds local MFA alignment where it will not flatten confirmed overlap timing, plus local acoustic analysis for voice-quality and prosodic detail before formatting.
 
-Automatically supported:
+Broad Jeffersonian transcription supports:
 
 - speaker labels `SP1:`, `SP2:`, `SP3:`
+- wrapped continuation lines leave the speaker column blank; a speaker label is repeated only for a new turn or a speaker change
 - numbered lines
 - recognized word order, repetitions, repairs, false starts, fillers, and cut-offs are preserved rather than corrected
 - ordinary ASR punctuation is stripped from Jeffersonian text
 - aligned overlap brackets `[ ]` in a monospace RTF
+- separate-channel recordings can be transcribed per channel locally so broad mode can detect overlapping speaker turns before narrow mode runs
+- latching with `=` for speaker changes with effectively no gap
 - timed silences of `(0.2)` or longer
 - inline silences inside a speaker turn when word timing exists
 - separate indented silence lines between speaker turns
+
+Narrow Jeffersonian transcription additionally supports:
+
 - louder words as `WORD`
 - quieter words as `°word°`
 - rising/falling pitch shifts as `↑word` or `↓word`
@@ -61,11 +66,11 @@ Automatically supported:
 - low-confidence words as a best guess in parentheses, such as `(example)`
 - explicitly unclear words/sounds with no usable guess as `(     )`
 
-These are heuristic first-pass annotations. Human review is still needed for conversation-analysis quality transcripts, especially for emphasis, breath, smiley voice, shaky voice, laughter, analyst comments, exact intonation marks, and uncertain or misclassified non-word sounds.
+Narrow voice-quality annotations are heuristic first-pass annotations. Human review is still needed for conversation-analysis quality transcripts, especially for emphasis, breath, smiley voice, shaky voice, laughter, analyst comments, exact intonation marks, and uncertain or misclassified non-word sounds.
 
-## Optional Heavy MFA Alignment
+## Narrow Jeffersonian Alignment
 
-The app can optionally run Montreal Forced Aligner after the local Whisper pass. This is a heavy local alignment step and can take much longer than ordinary transcription.
+Narrow Jeffersonian transcription runs Montreal Forced Aligner after the local Whisper pass. This local alignment step can take much longer than verbatim or broad Jeffersonian transcription.
 
 Setup tries to preinstall local MFA into the shared `QuickFixAppDependencies` folder and download the default UK English preset (`english_mfa` acoustic model plus `english_uk_mfa` dictionary) as well as the legacy US ARPA pair (`english_us_arpa`). The UI has an MFA preset dropdown for UK English, US English, Mandarin, French, German, Spanish, Portuguese, Japanese, Korean, Russian, Ukrainian, Swedish, Thai, Vietnamese, and the other app languages where MFA provides both an acoustic model and a dictionary. Use **Download selected MFA preset** to fetch an additional preset into the local shared dependency folder.
 
@@ -75,7 +80,7 @@ MFA requires local paths for:
 - an MFA acoustic model
 - an MFA pronunciation dictionary
 
-When enabled, the app creates a local MFA corpus from the temporary WAV and raw transcript, runs `mfa align`, exports the TextGrid into the source file's `QuickFixTranscription` folder, and uses the MFA word intervals to refine transcript timings before Jeffersonian formatting.
+When narrow Jeffersonian transcription is selected, the app creates a local MFA corpus from the temporary WAV and raw transcript, runs `mfa align`, uses the MFA word intervals to refine transcript timings, then removes temporary MFA artifacts unless they are inside the app's local temp workspace during processing.
 
 MFA can help with:
 
@@ -85,20 +90,20 @@ MFA can help with:
 - better evidence for likely prolongation, cut-offs, and within-word timing review
 - aligning a corrected transcript back onto audio
 
-MFA does not by itself solve speaker diarization or true overlap detection in mixed mono audio. For in-word overlap, the app still needs reliable speaker-separated channels, local diarization, or source separation before alignment.
+MFA does not by itself solve speaker diarization or true overlap detection in mixed mono audio. The app now uses reliable speaker-separated channels when present as the fastest broad-overlap path. For mono mixed recordings and in-word overlap, the app still needs a local diarization/overlap model such as a fully local pyannote setup, or source separation, before alignment.
 
 Phone labels are model/dictionary dependent. MFA can produce a phone-tier alignment, but that is not automatically the same as a full IPA phonetic transcription unless the chosen dictionary/model uses IPA-style phone labels.
 
-## IPA Font And IPA-Style Output
+## IPA Font
 
-Setup downloads the current Charis font package from SIL into `../QuickFixAppDependencies/.tools/fonts/Charis`. Charis is a Unicode font family suited to IPA display. The app can use this font for regular transcripts, Jeffersonian transcripts, and MFA phone-tier output.
+Setup downloads the current Charis font package from SIL into `../QuickFixAppDependencies/.tools/fonts/Charis`. Charis is a Unicode font family suited to IPA display. The app can use this font for regular transcripts and Jeffersonian transcripts.
 
 Important distinction:
 
 - an IPA font displays IPA symbols correctly
 - it does not convert ordinary spelling into IPA
 
-For actual IPA-style output, enable HEAVY MFA alignment and `Export MFA phone-tier transcript`. The app will export a separate `.rtf` from the MFA phone tier. Whether those symbols are true IPA depends on the local MFA acoustic model and pronunciation dictionary. Many MFA resources use model-specific phone labels rather than strict IPA.
+The app no longer exports a separate phone-tier file during normal transcription because each input should produce only the selected transcript. Whether MFA phone symbols are true IPA depends on the local MFA acoustic model and pronunciation dictionary. Many MFA resources use model-specific phone labels rather than strict IPA.
 
 For Jeffersonian output, keep in mind that overlap alignment is visually strongest in monospace fonts. Charis improves IPA display, but it is not a monospace font.
 

@@ -52,10 +52,10 @@ data.
 - Export transcripts as `.rtf`.
 - Preserve original source files untouched.
 - Support language selection with an `Auto-detect` option and manual override.
-- Provide a checkbox for `Upgrade to simple Jeffersonian transcription`.
-- Keep a raw transcript artifact internally for traceability.
-- Generate a separate Jeffersonian-formatted output when that checkbox is
-  enabled.
+- Provide a transcription type selector for `Verbatim transcription`,
+  `Broad Jeffersonian transcription`, and `Narrow Jeffersonian transcription`.
+- Export exactly one visible transcript file per source item: the selected
+  transcription type.
 
 ## Local-Only Architecture
 
@@ -68,7 +68,7 @@ Use a modular pipeline:
 - `engine` for local transcription
 - `diarization` for local speaker separation if available
 - `formatter/jeffersonian` for overlap, silence, and speaker formatting
-- `mfa_alignment` for optional heavy local forced alignment and TextGrid parsing
+- `mfa_alignment` for narrow Jeffersonian local forced alignment and TextGrid parsing
 - `font_assets` for local IPA-capable font discovery
 - `exporter/rtf` for `.rtf` output
 - `ui` for the desktop interface
@@ -118,8 +118,8 @@ Allowed dependency behavior:
 - download pinned dependencies from trusted sources during setup/update
 - download a default local Whisper model during setup/update, then verify it by
   checksum before use
-- install optional heavy MFA runtime assets during setup/update so the local MFA
-  fields can be prefilled when the user enables HEAVY MFA alignment
+- install optional MFA runtime assets during setup/update so the local MFA
+  fields can be prefilled when the user chooses narrow Jeffersonian transcription
 - provide a clear list of missing local components
 
 Prohibited dependency behavior:
@@ -184,12 +184,12 @@ The dropdown should:
 - pass the selected language as a local engine hint
 - never call online language services
 
-## Jeffersonian Mode
+## Jeffersonian Modes
 
-When `Upgrade to simple Jeffersonian transcription` is enabled, run a local
-post-processing formatter after raw transcription.
+When `Broad Jeffersonian transcription` or `Narrow Jeffersonian transcription`
+is selected, run a local post-processing formatter after raw transcription.
 
-Output rules:
+Broad Jeffersonian output rules:
 
 - write one line per speaker
 - label speakers `SP1`, `SP2`, `SP3`, and so on
@@ -197,18 +197,22 @@ Output rules:
   and cut-offs rather than correcting or smoothing speech
 - strip ordinary ASR punctuation from Jeffersonian text
 - mark overlapping speech with `[]`
+- mark latching with `=` where adjacent speaker turns have effectively no gap
 - mark silences in tenths of a second, such as `(0.2)`
+- produce one selected `.rtf` output file per input
+
+Broad Jeffersonian mode must be the faster structural pass. It must not run
+MFA alignment or local acoustic voice-quality analysis during recording
+processing.
+
+Narrow Jeffersonian output adds voice-quality and prosodic detail:
+
 - mark low-confidence words as a best guess in parentheses, such as `(example)`
 - mark explicitly unclear words/sounds with no usable guess as `(     )`
 - preserve supported non-word sound conventions, including `((cough))`,
   `((clears throat))`, `.snih.`, `((sigh))`, `.mt.`, `.dt.`, `.hhh`,
   `hhh`, `hm`, `mm`, and `mhm`
 - render schwa-like hesitation as `eh`
-- preserve a separate raw transcript artifact for traceability
-
-Local acoustic analysis may add first-pass Jeffersonian cues when word timing is
-available:
-
 - louder words as `WORD`
 - quieter words as `°word°`
 - rising or falling pitch shifts as `↑word` or `↓word`
@@ -216,8 +220,8 @@ available:
 - likely prolongation as `wo::rd`
 - conservative possible cut-off marking as `word-`
 
-These acoustic cues are heuristics and must be treated as review aids, not
-authoritative conversation-analysis annotation.
+These narrow voice-quality cues are heuristics and must be treated as review
+aids, not authoritative conversation-analysis annotation.
 
 MFA can refine the timing of supported non-word tokens when they are present in
 the local transcript or TextGrid, but MFA must not be presented as a fully
@@ -244,10 +248,11 @@ Preferred behavior:
   local diarization or channel timing exists
 - never use external speaker-labeling, diarization, or alignment services
 
-## Optional Heavy MFA Alignment
+## Narrow Jeffersonian MFA Alignment
 
-Montreal Forced Aligner can be enabled as an optional heavy local alignment
-step. It must be clearly labelled as slower than ordinary transcription.
+Montreal Forced Aligner is enabled when `Narrow Jeffersonian transcription` is
+selected. It must be clearly labelled as slower than verbatim and broad
+Jeffersonian transcription.
 
 Rules:
 
@@ -268,7 +273,7 @@ Rules:
   folder when that folder is available
 - do not download MFA models during recording processing
 - run MFA only after local Whisper transcription has produced a transcript
-- export the MFA TextGrid beside the transcript output for auditability
+- keep MFA TextGrid artifacts temporary during normal transcription
 - use MFA word intervals to refine downstream timing when available
 
 MFA can improve:
@@ -284,7 +289,7 @@ audio or assign speakers. In-word overlap requires speaker-separated timing
 evidence such as separate channels, reliable local diarization, or local source
 separation before alignment.
 
-## IPA Font And Phone-Tier Output
+## IPA Font
 
 The app may download the SIL Charis font package during setup. This is a local
 display/export dependency and does not process recordings.
@@ -296,8 +301,8 @@ Rules:
 - offer an option to use the IPA-capable font for regular RTF output
 - offer an option to use the IPA-capable font for Jeffersonian RTF output
 - clearly explain that a font does not convert words into IPA
-- offer MFA phone-tier RTF export only when heavy MFA alignment is enabled
-- label phone-tier output as dictionary/model dependent, not guaranteed IPA
+- do not export a separate MFA phone-tier file during normal transcription,
+  because each input should produce only the selected transcript file
 
 For Jeffersonian transcripts, warn that the IPA font is not monospaced, so
 overlap bracket alignment is strongest with the default monospace font.
@@ -310,8 +315,9 @@ Do not overwrite original source files.
 
 Avoid overwriting previous transcripts. Use safe output names such as:
 
-- `<source_name>_transcript.rtf`
-- `<source_name>_jeffersonian.rtf`
+- `<source_name>_verbatim.rtf`
+- `<source_name>_broad_jeffersonian.rtf`
+- `<source_name>_narrow_jeffersonian.rtf`
 - `<source_name>_transcript_YYYYMMDD_HHMMSS.rtf` when a name already exists
 
 RTF export must escape transcript text safely so braces, backslashes, and other

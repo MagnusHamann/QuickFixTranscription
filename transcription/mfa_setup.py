@@ -28,6 +28,7 @@ from transcription.mfa_presets import DEFAULT_SETUP_MFA_PRESET_IDS, MFA_PRESETS,
 
 
 MICROMAMBA_DIR = MFA_TOOLS_DIR / "micromamba"
+MFA_LAUNCHER_FAILURE_PATTERNS = ("failed to create process",)
 
 
 def micromamba_root_dir() -> Path:
@@ -162,25 +163,33 @@ def download_mfa_preset(preset_id: str, progress: Callable[[str], None] = print)
     env = _mfa_runtime_env()
     env["MFA_ROOT_DIR"] = str(MFA_ROOT_DIR)
     mfa_command = _mfa_command_prefix(mfa)
+    fallback_mfa_command = _mfa_module_command_prefix(mfa)
     commands: list[list[str]] = []
     existing_acoustic = find_mfa_acoustic_model(preset.acoustic_model)
     existing_dictionary = find_mfa_dictionary(preset.dictionary_model)
     if existing_acoustic:
         progress(f"MFA acoustic model already available for {preset.label}: {existing_acoustic}")
     else:
-        commands.append([*mfa_command, "model", "download", "acoustic", preset.acoustic_model])
+        commands.append(["model", "download", "acoustic", preset.acoustic_model])
     if existing_dictionary:
         progress(f"MFA dictionary already available for {preset.label}: {existing_dictionary}")
     else:
-        commands.append([*mfa_command, "model", "download", "dictionary", preset.dictionary_model])
+        commands.append(["model", "download", "dictionary", preset.dictionary_model])
 
     if not commands:
         return True
 
     ok = True
-    for command in commands:
+    for command_args in commands:
+        command = [*mfa_command, *command_args]
         progress("Running: " + subprocess.list2cmdline(command))
         if not _run(command, progress, env=env):
+            if fallback_mfa_command is not None:
+                fallback_command = [*fallback_mfa_command, *command_args]
+                progress("Direct MFA launch failed; retrying with Python module fallback.")
+                progress("Running: " + subprocess.list2cmdline(fallback_command))
+                if _run(fallback_command, progress, env=env):
+                    continue
             ok = False
     return ok
 
@@ -210,7 +219,7 @@ def setup_mfa(progress: Callable[[str], None] = print) -> bool:
         progress(f"MFA dictionary: {status.mfa_dictionary_path}")
         return True
 
-    progress("MFA preset not fully available yet. You can still transcribe without HEAVY MFA alignment.")
+    progress("MFA preset not fully available yet. You can still transcribe without narrow Jeffersonian alignment.")
     return False
 
 
@@ -227,12 +236,16 @@ def _mfa_runtime_env() -> dict[str, str]:
 
 
 def _mfa_command_prefix(mfa_executable: str) -> list[str]:
+    return [mfa_executable]
+
+
+def _mfa_module_command_prefix(mfa_executable: str) -> list[str] | None:
     path = Path(mfa_executable).expanduser()
     if platform.system() == "Windows" and path.name.lower() == "mfa.exe" and path.parent.name.lower() == "scripts":
         python = path.parent.parent / "python.exe"
         if python.exists():
             return [str(python), "-m", "montreal_forced_aligner.command_line.mfa"]
-    return [mfa_executable]
+    return None
 
 
 def _run(command: list[str], progress: Callable[[str], None], env: dict[str, str] | None = None) -> bool:
@@ -245,13 +258,25 @@ def _run(command: list[str], progress: Callable[[str], None], env: dict[str, str
         errors="replace",
         env=env,
     )
+    launcher_failed = False
     for line in completed.stdout.splitlines():
         if line.strip():
-            progress(_safe_output(line.rstrip()))
+            output = _safe_output(line.rstrip())
+            if _mfa_launcher_failed_line(output):
+                launcher_failed = True
+            progress(output)
+    if launcher_failed:
+        progress("MFA launcher failed to create a process.")
+        return False
     if completed.returncode != 0:
         progress(f"Command failed with exit code {completed.returncode}.")
         return False
     return True
+
+
+def _mfa_launcher_failed_line(line: str) -> bool:
+    lower = line.lower()
+    return any(pattern in lower for pattern in MFA_LAUNCHER_FAILURE_PATTERNS)
 
 
 def _remove_tree(path: Path) -> bool:
