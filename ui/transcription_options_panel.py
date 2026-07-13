@@ -39,9 +39,11 @@ class TranscriptionOptionsPanel(QWidget):
 
     options_changed = Signal()
     mfa_preset_download_requested = Signal(str)
+    sherpa_setup_requested = Signal()
 
     def __init__(self) -> None:
         super().__init__()
+        self._sherpa_setup_running = False
         self.status_label = QLabel()
         self.status_label.setWordWrap(True)
 
@@ -75,6 +77,9 @@ class TranscriptionOptionsPanel(QWidget):
         self.jeffersonian_line_width.setSingleStep(5)
         self.jeffersonian_line_width.setSuffix(" chars")
         self.jeffersonian_line_width.setToolTip("Maximum Jeffersonian transcript text characters per line. Default is 50.")
+        self.prefer_gpu = QCheckBox("Prefer GPU acceleration when available")
+        self.prefer_gpu.setChecked(True)
+        self.prefer_gpu.setToolTip("Lets the local whisper.cpp binary use GPU acceleration when it was built with GPU support.")
         self.mfa_preset = QComboBox()
         for preset in MFA_PRESETS:
             self.mfa_preset.addItem(preset.label, preset.id)
@@ -93,13 +98,33 @@ class TranscriptionOptionsPanel(QWidget):
         self.mfa_browse = QPushButton("Browse")
         self.mfa_model_browse = QPushButton("Browse")
         self.mfa_dictionary_browse = QPushButton("Browse")
+        self.use_sherpa_diarization = QCheckBox("Use local sherpa-onnx diarization for mono overlap")
+        self.use_sherpa_diarization.setToolTip(
+            "Optional local-only speaker timing for mono/mixed recordings. Requires local sherpa-onnx package and model files."
+        )
+        self.download_sherpa_models = QPushButton("Download local sherpa-onnx setup")
+        self.download_sherpa_models.setToolTip(
+            "Downloads the optional sherpa-onnx Python package and local diarization models. It does not upload recordings or transcripts."
+        )
+        self.sherpa_segmentation_path = QLineEdit()
+        self.sherpa_segmentation_path.setPlaceholderText("Path to local sherpa-onnx segmentation model.onnx")
+        self.sherpa_embedding_path = QLineEdit()
+        self.sherpa_embedding_path.setPlaceholderText("Path to local sherpa-onnx speaker embedding model.onnx")
+        self.sherpa_segmentation_browse = QPushButton("Browse")
+        self.sherpa_embedding_browse = QPushButton("Browse")
+        self.sherpa_num_speakers = QSpinBox()
+        self.sherpa_num_speakers.setRange(0, 20)
+        self.sherpa_num_speakers.setValue(0)
+        self.sherpa_num_speakers.setSpecialValueText("Auto")
+        self.sherpa_num_speakers.setToolTip("Set a known speaker count, or leave Auto for local clustering.")
         self.use_ipa_font_regular = QCheckBox("Use IPA font for regular transcript")
         self.use_ipa_font_jeffersonian = QCheckBox("Use IPA font for Jeffersonian transcript")
         self.review_note = QPlainTextEdit()
         self.review_note.setPlainText(
             "The app now writes one selected .rtf transcript per source file.\n\n"
             "Broad Jeffersonian transcription is the faster structural pass. It uses local Whisper timing plus "
-            "channel-separated local overlap analysis when the recording has distinct speaker channels. It marks "
+            "channel-separated local overlap analysis when the recording has distinct speaker channels. Optional local "
+            "sherpa-onnx diarization can add speaker timing for mono recordings, but unknown overlapped speech still needs review. It marks "
             "temporal/sequential notation: SP1/SP2/SP3 labels, line numbers, configurable line wrapping, no ASR punctuation, "
             "[overlap] brackets, latching with =, and timed pauses of 0.2s+. It skips local MFA and acoustic voice-quality analysis.\n\n"
             "Narrow Jeffersonian transcription is slower. It adds local MFA alignment and local acoustic analysis for voice-quality "
@@ -164,6 +189,7 @@ class TranscriptionOptionsPanel(QWidget):
         output_layout.addWidget(self.language)
         output_layout.addWidget(QLabel("Transcription type"))
         output_layout.addWidget(self.transcription_mode)
+        output_layout.addWidget(self.prefer_gpu)
         line_width_row = QHBoxLayout()
         line_width_row.addWidget(QLabel("Jeffersonian line width"))
         line_width_row.addWidget(self.jeffersonian_line_width)
@@ -209,12 +235,31 @@ class TranscriptionOptionsPanel(QWidget):
         mfa_dictionary_row.addWidget(self.mfa_dictionary_browse)
         mfa_layout.addLayout(mfa_dictionary_row)
 
+        sherpa_group = QGroupBox("Broad Jeffersonian local sherpa-onnx diarization")
+        sherpa_layout = QVBoxLayout(sherpa_group)
+        sherpa_layout.addWidget(self.use_sherpa_diarization)
+        sherpa_layout.addWidget(self.download_sherpa_models)
+        sherpa_segmentation_row = QHBoxLayout()
+        sherpa_segmentation_row.addWidget(self.sherpa_segmentation_path)
+        sherpa_segmentation_row.addWidget(self.sherpa_segmentation_browse)
+        sherpa_layout.addLayout(sherpa_segmentation_row)
+        sherpa_embedding_row = QHBoxLayout()
+        sherpa_embedding_row.addWidget(self.sherpa_embedding_path)
+        sherpa_embedding_row.addWidget(self.sherpa_embedding_browse)
+        sherpa_layout.addLayout(sherpa_embedding_row)
+        sherpa_speakers_row = QHBoxLayout()
+        sherpa_speakers_row.addWidget(QLabel("Known speakers"))
+        sherpa_speakers_row.addWidget(self.sherpa_num_speakers)
+        sherpa_speakers_row.addStretch(1)
+        sherpa_layout.addLayout(sherpa_speakers_row)
+
         display_group = QGroupBox("Export font")
         display_layout = QVBoxLayout(display_group)
         display_layout.addWidget(self.use_ipa_font_regular)
         display_layout.addWidget(self.use_ipa_font_jeffersonian)
 
         advanced_content_layout.addWidget(engine_group)
+        advanced_content_layout.addWidget(sherpa_group)
         advanced_content_layout.addWidget(mfa_group)
         advanced_content_layout.addWidget(display_group)
         advanced_layout.addWidget(self.advanced_content)
@@ -225,7 +270,10 @@ class TranscriptionOptionsPanel(QWidget):
             self.mfa_browse,
             self.mfa_model_browse,
             self.mfa_dictionary_browse,
+            self.sherpa_segmentation_browse,
+            self.sherpa_embedding_browse,
             self.download_mfa_preset,
+            self.download_sherpa_models,
             self.refresh_dependencies,
         ):
             button.setCursor(Qt.PointingHandCursor)
@@ -256,12 +304,16 @@ class TranscriptionOptionsPanel(QWidget):
         self.mfa_browse.clicked.connect(self.choose_mfa)
         self.mfa_model_browse.clicked.connect(self.choose_mfa_model)
         self.mfa_dictionary_browse.clicked.connect(self.choose_mfa_dictionary)
+        self.sherpa_segmentation_browse.clicked.connect(self.choose_sherpa_segmentation_model)
+        self.sherpa_embedding_browse.clicked.connect(self.choose_sherpa_embedding_model)
+        self.download_sherpa_models.clicked.connect(self.request_sherpa_setup)
         self.download_mfa_preset.clicked.connect(self.request_mfa_preset_download)
         self.refresh_dependencies.clicked.connect(self.refresh_dependency_status)
         self.dependencies_toggle.toggled.connect(self._toggle_dependencies)
         self.advanced_toggle.toggled.connect(self._toggle_advanced_setup)
         self.transcribe_section.toggled.connect(self._update_visibility)
         self.transcription_mode.currentIndexChanged.connect(self._update_visibility)
+        self.use_sherpa_diarization.toggled.connect(self._update_visibility)
         self.mfa_preset.currentIndexChanged.connect(self._mfa_preset_changed)
         self.language.currentIndexChanged.connect(self._language_changed)
         self.transcription_mode.currentIndexChanged.connect(lambda _value: self.options_changed.emit())
@@ -274,15 +326,20 @@ class TranscriptionOptionsPanel(QWidget):
             self.mfa_path,
             self.mfa_model_path,
             self.mfa_dictionary_path,
+            self.sherpa_segmentation_path,
+            self.sherpa_embedding_path,
         ):
             widget.textChanged.connect(self.options_changed)
         for checkbox in (
             self.transcribe_section,
+            self.prefer_gpu,
+            self.use_sherpa_diarization,
             self.use_ipa_font_regular,
             self.use_ipa_font_jeffersonian,
         ):
             checkbox.toggled.connect(self.options_changed)
         self.jeffersonian_line_width.valueChanged.connect(lambda _value: self.options_changed.emit())
+        self.sherpa_num_speakers.valueChanged.connect(lambda _value: self.options_changed.emit())
 
     def _toggle_dependencies(self, checked: bool) -> None:
         self.dependencies_content.setVisible(checked)
@@ -300,6 +357,17 @@ class TranscriptionOptionsPanel(QWidget):
         is_jeffersonian = mode != VERBATIM_TRANSCRIPTION
         mfa_enabled = mode == NARROW_JEFFERSONIAN_TRANSCRIPTION
         self.jeffersonian_line_width.setEnabled(is_jeffersonian)
+        self.use_sherpa_diarization.setEnabled(is_jeffersonian)
+        sherpa_enabled = is_jeffersonian and self.use_sherpa_diarization.isChecked()
+        for widget in (
+            self.sherpa_segmentation_path,
+            self.sherpa_embedding_path,
+            self.sherpa_segmentation_browse,
+            self.sherpa_embedding_browse,
+            self.sherpa_num_speakers,
+        ):
+            widget.setEnabled(sherpa_enabled)
+        self.download_sherpa_models.setEnabled(is_jeffersonian and not self._sherpa_setup_running)
         self.use_ipa_font_regular.setEnabled(mode == VERBATIM_TRANSCRIPTION)
         self.use_ipa_font_jeffersonian.setEnabled(is_jeffersonian)
         for widget in (
@@ -328,6 +396,10 @@ class TranscriptionOptionsPanel(QWidget):
             self.mfa_model_path.setText(status.mfa_acoustic_model_path)
         if status.mfa_dictionary_path and not self.mfa_dictionary_path.text().strip():
             self.mfa_dictionary_path.setText(status.mfa_dictionary_path)
+        if status.sherpa_segmentation_model_path and not self.sherpa_segmentation_path.text().strip():
+            self.sherpa_segmentation_path.setText(status.sherpa_segmentation_model_path)
+        if status.sherpa_embedding_model_path and not self.sherpa_embedding_path.text().strip():
+            self.sherpa_embedding_path.setText(status.sherpa_embedding_model_path)
 
         mfa_ready = bool(status.mfa_path and status.mfa_acoustic_model_path and status.mfa_dictionary_path)
         if status.ready_for_transcription:
@@ -343,6 +415,17 @@ class TranscriptionOptionsPanel(QWidget):
 
     def request_mfa_preset_download(self) -> None:
         self.mfa_preset_download_requested.emit(self.current_mfa_preset_id())
+
+    def request_sherpa_setup(self) -> None:
+        self.sherpa_setup_requested.emit()
+
+    def set_sherpa_setup_running(self, running: bool) -> None:
+        self._sherpa_setup_running = running
+        self.download_sherpa_models.setEnabled(not running and self.current_transcription_mode() != VERBATIM_TRANSCRIPTION)
+        if running:
+            self.download_sherpa_models.setText("Downloading local sherpa-onnx setup...")
+        else:
+            self.download_sherpa_models.setText("Download local sherpa-onnx setup")
 
     def set_mfa_download_running(self, running: bool) -> None:
         narrow = self.current_transcription_mode() == NARROW_JEFFERSONIAN_TRANSCRIPTION
@@ -448,6 +531,20 @@ class TranscriptionOptionsPanel(QWidget):
         if path:
             self.mfa_dictionary_path.setText(path)
 
+    def choose_sherpa_segmentation_model(self) -> None:
+        current = self.sherpa_segmentation_path.text().strip()
+        start_dir = str(Path(current).parent) if current else ""
+        path, _ = QFileDialog.getOpenFileName(self, "Choose local sherpa-onnx segmentation model", start_dir, "ONNX models (*.onnx);;All files (*)")
+        if path:
+            self.sherpa_segmentation_path.setText(path)
+
+    def choose_sherpa_embedding_model(self) -> None:
+        current = self.sherpa_embedding_path.text().strip()
+        start_dir = str(Path(current).parent) if current else ""
+        path, _ = QFileDialog.getOpenFileName(self, "Choose local sherpa-onnx embedding model", start_dir, "ONNX models (*.onnx);;All files (*)")
+        if path:
+            self.sherpa_embedding_path.setText(path)
+
     def selected_options(self) -> TranscriptionOptions:
         return TranscriptionOptions(
             whisper_executable=self.whisper_path.text().strip(),
@@ -459,10 +556,15 @@ class TranscriptionOptionsPanel(QWidget):
             finish_time=self.finish_time.text().strip(),
             jeffersonian=self.current_transcription_mode() != VERBATIM_TRANSCRIPTION,
             jeffersonian_line_width=self.jeffersonian_line_width.value(),
+            prefer_gpu=self.prefer_gpu.isChecked(),
             use_mfa_alignment=self.current_transcription_mode() == NARROW_JEFFERSONIAN_TRANSCRIPTION,
             mfa_executable=self.mfa_path.text().strip(),
             mfa_acoustic_model=self.mfa_model_path.text().strip(),
             mfa_dictionary=self.mfa_dictionary_path.text().strip(),
+            use_sherpa_diarization=self.use_sherpa_diarization.isChecked(),
+            sherpa_segmentation_model=self.sherpa_segmentation_path.text().strip(),
+            sherpa_embedding_model=self.sherpa_embedding_path.text().strip(),
+            sherpa_num_speakers=self.sherpa_num_speakers.value(),
             use_ipa_font_regular=self.use_ipa_font_regular.isChecked(),
             use_ipa_font_jeffersonian=self.use_ipa_font_jeffersonian.isChecked(),
             export_mfa_phone_transcript=False,

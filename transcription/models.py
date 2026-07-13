@@ -96,10 +96,15 @@ class TranscriptionOptions:
     finish_time: str = ""
     jeffersonian: bool = False
     jeffersonian_line_width: int = 50
+    prefer_gpu: bool = True
     use_mfa_alignment: bool = False
     mfa_executable: str = ""
     mfa_acoustic_model: str = ""
     mfa_dictionary: str = ""
+    use_sherpa_diarization: bool = False
+    sherpa_segmentation_model: str = ""
+    sherpa_embedding_model: str = ""
+    sherpa_num_speakers: int = 0
     use_ipa_font_regular: bool = False
     use_ipa_font_jeffersonian: bool = False
     export_mfa_phone_transcript: bool = False
@@ -134,6 +139,20 @@ class TranscriptionOptions:
 
         if not 20 <= self.jeffersonian_line_width <= 200:
             raise ValueError("Jeffersonian line width must be between 20 and 200 characters.")
+
+        if self.use_sherpa_diarization:
+            if mode == VERBATIM_TRANSCRIPTION:
+                raise ValueError("Choose broad or narrow Jeffersonian transcription before enabling sherpa-onnx diarization.")
+            if not self.sherpa_segmentation_model.strip():
+                raise ValueError("Choose a local sherpa-onnx speaker segmentation model before enabling sherpa-onnx diarization.")
+            if not Path(self.sherpa_segmentation_model).expanduser().exists():
+                raise ValueError("The selected sherpa-onnx speaker segmentation model was not found.")
+            if not self.sherpa_embedding_model.strip():
+                raise ValueError("Choose a local sherpa-onnx speaker embedding model before enabling sherpa-onnx diarization.")
+            if not Path(self.sherpa_embedding_model).expanduser().exists():
+                raise ValueError("The selected sherpa-onnx speaker embedding model was not found.")
+            if not 0 <= self.sherpa_num_speakers <= 20:
+                raise ValueError("Known speaker count must be 0 for auto or between 1 and 20.")
 
         if mode == NARROW_JEFFERSONIAN_TRANSCRIPTION or self.use_mfa_alignment:
             if not self.mfa_executable.strip():

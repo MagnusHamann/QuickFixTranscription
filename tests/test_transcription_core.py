@@ -19,7 +19,7 @@ from transcription.acoustic_analysis import apply_local_acoustic_annotations
 from transcription.acoustic_analysis import _merge_wrapped_stretches
 from transcription.batch_processor import TranscriptionBatchProcessor
 from transcription.cpu.vad import energy_vad
-from transcription.engine import parse_whisper_json
+from transcription.engine import WhisperCppEngine, parse_whisper_json
 from transcription.event_engine import suggestions_for_transcript
 from transcription.file_utils import collect_media_files, output_directory_for, unique_output_path
 from transcription.languages import LANGUAGE_CHOICES
@@ -45,6 +45,7 @@ from transcription.project_renderer import iter_project_suggestions, render_conf
 from transcription.project_review import set_candidate_status
 from transcription.project_store import load_project, save_project
 from transcription.overlap_analysis import channels_are_distinct, has_cross_speaker_overlap, merge_channel_results
+from transcription.sherpa_diarization import DiarizationTurn, apply_diarization_to_transcript
 from transcription import dependencies as transcription_dependencies
 from transcription import mfa_alignment as transcription_mfa_alignment
 from transcription import mfa_setup as transcription_mfa_setup
@@ -147,6 +148,97 @@ class OverlapAnalysisTests(unittest.TestCase):
         self.assertEqual([segment.speaker for segment in merged.segments], ["channel_1", "channel_2"])
         lines = format_simple_jeffersonian(merged, profile=BROAD_JEFFERSONIAN_PROFILE)
         self.assertEqual(lines[0].index("["), lines[1].index("["))
+
+
+class SherpaDiarizationTests(unittest.TestCase):
+    def test_sherpa_overlay_retags_words_and_adds_missing_overlap_placeholder(self) -> None:
+        source = Path("sample.wav")
+        result = TranscriptResult(
+            source_path=source,
+            language="en",
+            segments=[
+                TranscriptSegment(
+                    "hello there",
+                    start=0.0,
+                    end=0.9,
+                    speaker="asr",
+                    words=(
+                        WordToken("hello", 0.0, 0.4, "asr"),
+                        WordToken("there", 0.5, 0.9, "asr"),
+                    ),
+                )
+            ],
+        )
+        diarized = apply_diarization_to_transcript(
+            result,
+            (
+                DiarizationTurn(0.0, 0.9, "sherpa_1"),
+                DiarizationTurn(0.3, 0.8, "sherpa_2"),
+            ),
+        )
+
+        self.assertTrue(has_cross_speaker_overlap(diarized))
+        self.assertEqual(diarized.segments[0].speaker, "sherpa_1")
+        self.assertIn(
+            TranscriptSegment("(     )", start=0.3, end=0.8, speaker="sherpa_2"),
+            diarized.segments,
+        )
+        lines = format_simple_jeffersonian(diarized, profile=BROAD_JEFFERSONIAN_PROFILE)
+        self.assertEqual(lines[0].index("["), lines[1].index("["))
+
+
+class WhisperCppEngineTests(unittest.TestCase):
+    def test_gpu_preference_adds_no_gpu_flag_only_when_disabled(self) -> None:
+        commands: list[list[str]] = []
+
+        class FakeProcess:
+            returncode = 0
+
+            def __init__(self, command: list[str], **_kwargs) -> None:
+                commands.append(command)
+                output_base = Path(command[command.index("-of") + 1])
+                output_base.with_suffix(".json").write_text(
+                    json.dumps(
+                        {
+                            "result": {"language": "en"},
+                            "transcription": [
+                                {
+                                    "text": "hello",
+                                    "timestamps": {"from": "00:00:00.000", "to": "00:00:00.500"},
+                                }
+                            ],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+            def poll(self) -> int:
+                return 0
+
+            def wait(self) -> None:
+                return None
+
+            def terminate(self) -> None:
+                return None
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            executable = root / "whisper"
+            model = root / "model.bin"
+            audio = root / "sample.wav"
+            work_dir = root / "work"
+            work_dir.mkdir()
+            for path in (executable, model, audio):
+                path.write_bytes(b"local")
+
+            with patch("transcription.engine.subprocess.Popen", FakeProcess):
+                cpu_engine = WhisperCppEngine(str(executable), str(model), prefer_gpu=False)
+                cpu_engine.transcribe(audio, audio, work_dir, "", lambda _text: None, lambda: False)
+                gpu_engine = WhisperCppEngine(str(executable), str(model), prefer_gpu=True)
+                gpu_engine.transcribe(audio, audio, work_dir, "", lambda _text: None, lambda: False)
+
+        self.assertIn("-ng", commands[0])
+        self.assertNotIn("-ng", commands[1])
 
 
 class SiblingAppDiscoveryTests(unittest.TestCase):
@@ -1035,7 +1127,7 @@ class BatchOutputTests(unittest.TestCase):
                 return None
 
         class FakeEngine:
-            def __init__(self, _executable: str, _model_path: str) -> None:
+            def __init__(self, _executable: str, _model_path: str, _prefer_gpu: bool = True) -> None:
                 return None
 
             def terminate(self) -> None:
@@ -1164,6 +1256,38 @@ class ModelSetupTests(unittest.TestCase):
                 mfa_dictionary=str(dictionary),
             )
             self.assertEqual(options.validate(), (None, None))
+
+    def test_transcription_options_validate_local_sherpa_assets_when_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            whisper = root / "whisper"
+            model = root / "model.bin"
+            segmentation = root / "segmentation.onnx"
+            embedding = root / "speaker_embedding.onnx"
+            for path in (whisper, model, segmentation, embedding):
+                path.write_text("local", encoding="utf-8")
+
+            options = TranscriptionOptions(
+                whisper_executable=str(whisper),
+                model_path=str(model),
+                transcription_mode=BROAD_JEFFERSONIAN_TRANSCRIPTION,
+                use_sherpa_diarization=True,
+                sherpa_segmentation_model=str(segmentation),
+                sherpa_embedding_model=str(embedding),
+                sherpa_num_speakers=2,
+            )
+            self.assertEqual(options.validate(), (None, None))
+
+            verbatim = TranscriptionOptions(
+                whisper_executable=str(whisper),
+                model_path=str(model),
+                transcription_mode=VERBATIM_TRANSCRIPTION,
+                use_sherpa_diarization=True,
+                sherpa_segmentation_model=str(segmentation),
+                sherpa_embedding_model=str(embedding),
+            )
+            with self.assertRaises(ValueError):
+                verbatim.validate()
 
     def test_transcription_options_reject_missing_mfa_dictionary_when_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

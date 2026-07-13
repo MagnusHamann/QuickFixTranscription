@@ -29,6 +29,7 @@ from transcription.models import (
 from transcription.offline_guard import offline_processing_guard, reject_remote_source
 from transcription.overlap_analysis import channels_are_distinct, has_cross_speaker_overlap, merge_channel_results
 from transcription.rtf_exporter import transcript_lines, write_rtf
+from transcription.sherpa_diarization import apply_diarization_to_transcript, run_sherpa_diarization
 
 
 class TranscriptionBatchProcessor(QObject):
@@ -67,6 +68,7 @@ class TranscriptionBatchProcessor(QObject):
         record: MediaRecord,
         fallback: TranscriptResult,
         temp_dir: Path,
+        temp_audio: Path,
         start_seconds: int | None,
         finish_seconds: int | None,
     ) -> TranscriptResult:
@@ -79,11 +81,11 @@ class TranscriptionBatchProcessor(QObject):
             audio_channels = int(probe.get("audio_channels") or 0)
         except Exception as exc:
             self.log_message.emit(f"Broad overlap analysis skipped: could not inspect audio channels ({exc}).")
-            return fallback
+            return self._build_sherpa_result(temp_audio, fallback)
 
         if audio_channels < 2:
             self.log_message.emit("Broad overlap analysis: mono or single-channel audio, using Whisper timing only.")
-            return fallback
+            return self._build_sherpa_result(temp_audio, fallback)
 
         channel_paths = [temp_dir / f"{record.path.stem}_channel_{index + 1}.wav" for index in range(2)]
         for channel_index, channel_path in enumerate(channel_paths):
@@ -103,11 +105,11 @@ class TranscriptionBatchProcessor(QObject):
                 self.log_message.emit(
                     f"Broad overlap analysis skipped: could not extract channel {channel_index + 1}."
                 )
-                return fallback
+                return self._build_sherpa_result(temp_audio, fallback)
 
         if not channels_are_distinct(channel_paths[0], channel_paths[1]):
             self.log_message.emit("Broad overlap analysis: channels are not distinct enough for speaker overlap detection.")
-            return fallback
+            return self._build_sherpa_result(temp_audio, fallback)
 
         self.log_message.emit("Broad overlap analysis: distinct channels found, transcribing channels locally.")
         channel_results: list[tuple[str, TranscriptResult]] = []
@@ -130,6 +132,21 @@ class TranscriptionBatchProcessor(QObject):
         self.log_message.emit("Broad overlap analysis: using channel-separated local transcript for overlap brackets.")
         return merged
 
+    def _build_sherpa_result(self, temp_audio: Path, fallback: TranscriptResult) -> TranscriptResult:
+        if not self.options.use_sherpa_diarization:
+            return fallback
+        try:
+            turns = run_sherpa_diarization(temp_audio, self.options, self.log_message.emit, self.cancelled)
+            result = apply_diarization_to_transcript(fallback, turns)
+            if has_cross_speaker_overlap(result):
+                self.log_message.emit(
+                    "sherpa-onnx found overlapping speaker timing. Unknown overlapped speech may be shown as (     ) for review."
+                )
+            return result
+        except Exception as exc:
+            self.log_message.emit(f"sherpa-onnx diarization skipped: {exc}")
+            return fallback
+
     @Slot()
     def run(self) -> None:
         completed = 0
@@ -143,7 +160,7 @@ class TranscriptionBatchProcessor(QObject):
             self.finished.emit(0, total)
             return
 
-        self.engine = WhisperCppEngine(self.options.whisper_executable, self.options.model_path)
+        self.engine = WhisperCppEngine(self.options.whisper_executable, self.options.model_path, self.options.prefer_gpu)
 
         for index, record in enumerate(self.records, start=1):
             if self._cancelled:
@@ -193,6 +210,7 @@ class TranscriptionBatchProcessor(QObject):
                             record,
                             result,
                             temp_dir,
+                            temp_audio,
                             start_seconds,
                             finish_seconds,
                         )

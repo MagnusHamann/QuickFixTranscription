@@ -30,6 +30,7 @@ MFA_DICTIONARY_EXTENSIONS = {".dict", ".txt", ".yaml", ".yml", ".zip"}
 MFA_TOOLS_DIR = DEPENDENCY_ROOT / ".tools" / "mfa"
 MFA_ENV_DIR = MFA_TOOLS_DIR / "env"
 MFA_ROOT_DIR = MFA_TOOLS_DIR / "root"
+SHERPA_TOOLS_DIR = DEPENDENCY_ROOT / ".tools" / "sherpa-onnx"
 DEFAULT_MFA_PRESET = mfa_preset_by_id(DEFAULT_MFA_PRESET_ID)
 if DEFAULT_MFA_PRESET is None:
     raise RuntimeError(f"Unknown default MFA preset: {DEFAULT_MFA_PRESET_ID}")
@@ -47,6 +48,8 @@ class DependencyStatus:
     mfa_path: str | None = None
     mfa_acoustic_model_path: str | None = None
     mfa_dictionary_path: str | None = None
+    sherpa_segmentation_model_path: str | None = None
+    sherpa_embedding_model_path: str | None = None
 
     @property
     def ready_for_transcription(self) -> bool:
@@ -248,6 +251,42 @@ def mfa_preset_paths(preset_id: str) -> tuple[str | None, str | None]:
     )
 
 
+def find_sherpa_segmentation_model() -> str | None:
+    candidates: list[Path] = []
+    for app_root in quickfix_app_roots(PROJECT_ROOT):
+        roots = [
+            app_root / ".tools" / "sherpa-onnx",
+            app_root / "models" / "sherpa-onnx",
+        ]
+        for root in roots:
+            if root.exists():
+                candidates.extend(
+                    path
+                    for path in root.rglob("*.onnx")
+                    if "segmentation" in str(path).lower() or path.name.lower() == "model.onnx"
+                )
+    candidates.sort(key=lambda path: (0 if "segmentation" in str(path).lower() else 1, path.name.lower(), len(str(path))))
+    return str(candidates[0]) if candidates else None
+
+
+def find_sherpa_embedding_model() -> str | None:
+    candidates: list[Path] = []
+    for app_root in quickfix_app_roots(PROJECT_ROOT):
+        roots = [
+            app_root / ".tools" / "sherpa-onnx",
+            app_root / "models" / "sherpa-onnx",
+        ]
+        for root in roots:
+            if root.exists():
+                candidates.extend(
+                    path
+                    for path in root.rglob("*.onnx")
+                    if any(marker in path.name.lower() for marker in ("3dspeaker", "embedding", "eres2net", "speaker"))
+                )
+    candidates.sort(key=lambda path: (path.name.lower(), len(str(path))))
+    return str(candidates[0]) if candidates else None
+
+
 def dependency_status() -> DependencyStatus:
     ffmpeg, ffprobe = find_ffmpeg_tools()
     return DependencyStatus(
@@ -259,4 +298,6 @@ def dependency_status() -> DependencyStatus:
         mfa_path=find_mfa_executable(),
         mfa_acoustic_model_path=find_mfa_acoustic_model(),
         mfa_dictionary_path=find_mfa_dictionary(),
+        sherpa_segmentation_model_path=find_sherpa_segmentation_model(),
+        sherpa_embedding_model_path=find_sherpa_embedding_model(),
     )

@@ -58,6 +58,24 @@ class MfaPresetDownloadWorker(QObject):
         self.finished.emit(ok)
 
 
+class SherpaSetupWorker(QObject):
+    """Install optional sherpa-onnx package/models without blocking the main UI."""
+
+    log_message = Signal(str)
+    finished = Signal(bool)
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            from transcription.sherpa_setup import setup_sherpa
+
+            ok = setup_sherpa(self.log_message.emit)
+        except Exception as exc:
+            self.log_message.emit(f"sherpa-onnx setup failed: {exc}")
+            ok = False
+        self.finished.emit(ok)
+
+
 class TranscriptionWindow(QMainWindow):
     """Top-level UI for local batch transcription."""
 
@@ -69,6 +87,8 @@ class TranscriptionWindow(QMainWindow):
         self.worker: TranscriptionBatchProcessor | None = None
         self.mfa_download_thread: QThread | None = None
         self.mfa_download_worker: MfaPresetDownloadWorker | None = None
+        self.sherpa_setup_thread: QThread | None = None
+        self.sherpa_setup_worker: SherpaSetupWorker | None = None
         self.runner = FFmpegRunner()
 
         self.drop_zone = DragDropWidget(
@@ -169,6 +189,7 @@ class TranscriptionWindow(QMainWindow):
         self.start_button.clicked.connect(self.start_transcription)
         self.cancel_button.clicked.connect(self.cancel_transcription)
         self.options_panel.mfa_preset_download_requested.connect(self.download_mfa_preset)
+        self.options_panel.sherpa_setup_requested.connect(self.download_sherpa_setup)
 
     def _check_ffmpeg(self) -> None:
         ffmpeg, ffprobe = find_ffmpeg_tools()
@@ -287,6 +308,12 @@ class TranscriptionWindow(QMainWindow):
 
     @Slot(str)
     def download_mfa_preset(self, preset_id: str) -> None:
+        if self.worker_thread is not None:
+            QMessageBox.information(self, "Transcription running", "Finish or cancel transcription before downloading setup files.")
+            return
+        if self.sherpa_setup_thread is not None:
+            QMessageBox.information(self, "sherpa-onnx setup running", "Finish the sherpa-onnx setup before downloading MFA presets.")
+            return
         if self.mfa_download_thread is not None:
             QMessageBox.information(self, "MFA setup running", "An MFA preset download is already running.")
             return
@@ -311,6 +338,34 @@ class TranscriptionWindow(QMainWindow):
         self.mfa_download_thread.finished.connect(self.mfa_download_thread.deleteLater)
         self.mfa_download_thread.start()
 
+    @Slot()
+    def download_sherpa_setup(self) -> None:
+        if self.worker_thread is not None:
+            QMessageBox.information(self, "Transcription running", "Finish or cancel transcription before downloading setup files.")
+            return
+        if self.mfa_download_thread is not None:
+            QMessageBox.information(self, "MFA setup running", "Finish the MFA setup before downloading sherpa-onnx files.")
+            return
+        if self.sherpa_setup_thread is not None:
+            QMessageBox.information(self, "sherpa-onnx setup running", "The sherpa-onnx setup is already running.")
+            return
+
+        self.append_log("Downloading optional local sherpa-onnx setup.")
+        self.append_log("This setup may use the internet for package/model files, but it does not upload recordings or transcripts.")
+        self.options_panel.set_sherpa_setup_running(True)
+        self.status.showMessage("Downloading sherpa-onnx setup...")
+
+        self.sherpa_setup_thread = QThread(self)
+        self.sherpa_setup_worker = SherpaSetupWorker()
+        self.sherpa_setup_worker.moveToThread(self.sherpa_setup_thread)
+        self.sherpa_setup_thread.started.connect(self.sherpa_setup_worker.run)
+        self.sherpa_setup_worker.log_message.connect(self.append_log)
+        self.sherpa_setup_worker.finished.connect(self.sherpa_setup_finished)
+        self.sherpa_setup_worker.finished.connect(self.sherpa_setup_thread.quit)
+        self.sherpa_setup_worker.finished.connect(self.sherpa_setup_worker.deleteLater)
+        self.sherpa_setup_thread.finished.connect(self.sherpa_setup_thread.deleteLater)
+        self.sherpa_setup_thread.start()
+
     @Slot(str)
     def append_log(self, message: str) -> None:
         self.log.appendPlainText(message)
@@ -326,6 +381,18 @@ class TranscriptionWindow(QMainWindow):
             QMessageBox.information(self, "MFA preset ready", "The selected local MFA preset is ready.")
         else:
             QMessageBox.warning(self, "MFA preset problem", "The selected MFA preset could not be downloaded.")
+
+    @Slot(bool)
+    def sherpa_setup_finished(self, ok: bool) -> None:
+        self.sherpa_setup_worker = None
+        self.sherpa_setup_thread = None
+        self.options_panel.set_sherpa_setup_running(False)
+        self.options_panel.apply_dependency_status(dependency_status())
+        self.status.showMessage("sherpa-onnx setup complete." if ok else "sherpa-onnx setup failed.")
+        if ok:
+            QMessageBox.information(self, "sherpa-onnx ready", "The optional local sherpa-onnx diarization setup is ready.")
+        else:
+            QMessageBox.warning(self, "sherpa-onnx problem", "The optional sherpa-onnx setup could not be completed.")
 
     @Slot(int, int)
     def transcription_finished(self, completed: int, failed: int) -> None:

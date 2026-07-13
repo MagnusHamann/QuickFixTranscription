@@ -104,9 +104,10 @@ def _parse_word_tokens(segment: dict, speaker: str | None) -> tuple[WordToken, .
 class WhisperCppEngine:
     """Adapter for a local whisper.cpp command-line executable."""
 
-    def __init__(self, executable: str, model_path: str) -> None:
+    def __init__(self, executable: str, model_path: str, prefer_gpu: bool = True) -> None:
         self.executable = Path(executable).expanduser()
         self.model_path = Path(model_path).expanduser()
+        self.prefer_gpu = prefer_gpu
         self.current_process: subprocess.Popen[str] | None = None
 
     def validate(self) -> None:
@@ -147,6 +148,11 @@ class WhisperCppEngine:
         ]
         if language_code:
             command.extend(["-l", language_code])
+        if self.prefer_gpu:
+            log_callback("GPU preference enabled; whisper.cpp will use local GPU acceleration if this binary supports it.")
+        else:
+            command.append("-ng")
+            log_callback("GPU preference disabled; running whisper.cpp in CPU mode.")
 
         log_callback("Running local whisper.cpp transcription.")
         self.current_process = subprocess.Popen(
