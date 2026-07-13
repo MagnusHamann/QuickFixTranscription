@@ -51,11 +51,11 @@ function Ensure-RuntimeAssets {
 }
 
 if ($SetupOnly -or -not (Test-LocalPython)) {
-    $args = @("-ExecutionPolicy", "Bypass", "-File", $bootstrap)
+    $bootstrapArgs = @()
     if ($Yes) {
-        $args += "-Yes"
+        $bootstrapArgs += "-Yes"
     }
-    & powershell.exe @args
+    & $bootstrap @bootstrapArgs
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }

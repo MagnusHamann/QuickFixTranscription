@@ -38,8 +38,8 @@ The app must not use cloud fallback behavior if local processing components are
 missing.
 
 The app may use network access only during an explicit setup or update phase to
-download general dependencies such as Python, FFmpeg, local Whisper binaries,
-Python wheels, or model files. That setup/update phase must be clearly separate
+download general dependencies such as PowerShell on Windows, Python, FFmpeg,
+local Whisper binaries, Python wheels, or model files. That setup/update phase must be clearly separate
 from recording processing and must never transmit user media or media-derived
 data.
 
@@ -54,6 +54,8 @@ data.
 - Support language selection with an `Auto-detect` option and manual override.
 - Provide a transcription type selector for `Verbatim transcription`,
   `Broad Jeffersonian transcription`, and `Narrow Jeffersonian transcription`.
+- Provide a simple GPU preference option for local Whisper acceleration when the
+  selected local backend supports it, with a CPU-only fallback.
 - Export exactly one visible transcript file per source item: the selected
   transcription type.
 
@@ -66,7 +68,8 @@ Use a modular pipeline:
 - `media` or `ffmpeg` for local audio extraction, segment selection, conversion,
   metadata, and duration checks
 - `engine` for local transcription
-- `diarization` for local speaker separation if available
+- `diarization` for local speaker separation if available, including optional
+  local sherpa-onnx timing evidence for mono/mixed recordings
 - `formatter/jeffersonian` for overlap, silence, and speaker formatting
 - `mfa_alignment` for narrow Jeffersonian local forced alignment and TextGrid parsing
 - `font_assets` for local IPA-capable font discovery
@@ -85,6 +88,7 @@ Acceptable behavior:
 - local Whisper model inference
 - local model loading from bundled files or user-selected paths
 - local CPU or GPU execution
+- a user-visible CPU/GPU preference that only changes local backend execution
 
 Prohibited behavior:
 
@@ -103,7 +107,7 @@ QuickFixTranscription may download and install general dependencies during an
 explicit setup or update phase. This is allowed only for app preparation, not for
 recording processing.
 
-On launch, the app may check for required components such as FFmpeg, Whisper
+On launch, the app may check for required components such as PowerShell on Windows, FFmpeg, Whisper
 binaries, model files, and Python packages. If anything is missing, it may offer
 an explicit setup flow.
 
@@ -120,6 +124,9 @@ Allowed dependency behavior:
   checksum before use
 - install optional MFA runtime assets during setup/update so the local MFA
   fields can be prefilled when the user chooses narrow Jeffersonian transcription
+- install optional sherpa-onnx runtime assets during setup/update so the local
+  diarization fields can be prefilled when the user chooses broad/narrow
+  Jeffersonian transcription
 - provide a clear list of missing local components
 
 Prohibited dependency behavior:

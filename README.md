@@ -11,9 +11,10 @@ The app uses local FFmpeg extraction plus a local `whisper.cpp` executable and l
 - Optional start and finish time selection using local FFmpeg segment extraction.
 - Language dropdown with `Auto-detect` and common Whisper language options.
 - Local `whisper.cpp` executable and local model path selection.
+- Optional **Prefer GPU acceleration when available** checkbox for local `whisper.cpp` builds that support GPU inference; unticking it forces CPU mode.
 - Exactly one selected `.rtf` transcript export into `QuickFixTranscription` beside each source file.
 - Transcription type selector: verbatim transcription, broad Jeffersonian transcription, or narrow Jeffersonian transcription.
-- Broad Jeffersonian transcription is the faster temporal/sequential pass: speaker sequence, local channel-based overlap when channels are distinct, latching, and timed pauses.
+- Broad Jeffersonian transcription is the faster temporal/sequential pass: speaker sequence, local channel-based overlap when channels are distinct, optional local sherpa-onnx speaker timing for mono/mixed recordings, latching, and timed pauses.
 - Narrow Jeffersonian transcription uses a slower local Montreal Forced Aligner pass plus local acoustic analysis for voice-quality and prosodic detail. MFA artifacts stay temporary and are not exported as extra files.
 - Narrow Jeffersonian voice-quality cues include loud/quiet speech, pitch shifts, speaking rate, likely prolongation, possible cut-offs, supported non-word sounds, and uncertainty markers.
 - Optional IPA-capable Charis font for regular and Jeffersonian RTF export.
@@ -47,6 +48,7 @@ Broad Jeffersonian transcription supports:
 - ordinary ASR punctuation is stripped from Jeffersonian text
 - aligned overlap brackets `[ ]` in a monospace RTF
 - separate-channel recordings can be transcribed per channel locally so broad mode can detect overlapping speaker turns before narrow mode runs
+- optional local sherpa-onnx diarization can add speaker timing for mono/mixed recordings; when it detects a second overlapping speaker but ASR has no separate words for that speaker, the app inserts `(     )` as a review placeholder instead of inventing speech
 - latching with `=` for speaker changes with effectively no gap
 - timed silences of `(0.2)` or longer
 - inline silences inside a speaker turn when word timing exists
@@ -90,7 +92,7 @@ MFA can help with:
 - better evidence for likely prolongation, cut-offs, and within-word timing review
 - aligning a corrected transcript back onto audio
 
-MFA does not by itself solve speaker diarization or true overlap detection in mixed mono audio. The app now uses reliable speaker-separated channels when present as the fastest broad-overlap path. For mono mixed recordings and in-word overlap, the app still needs a local diarization/overlap model such as a fully local pyannote setup, or source separation, before alignment.
+MFA does not by itself solve speaker diarization or true overlap detection in mixed mono audio. The app uses reliable speaker-separated channels when present as the fastest broad-overlap path. For mono mixed recordings, the optional local sherpa-onnx setup can add diarized speaker timing and likely overlap windows, but it still cannot recover exact missing words from a second speaker when the ASR draft only heard one text stream. Those regions are marked for review.
 
 Phone labels are model/dictionary dependent. MFA can produce a phone-tier alignment, but that is not automatically the same as a full IPA phonetic transcription unless the chosen dictionary/model uses IPA-style phone labels.
 
@@ -111,6 +113,7 @@ For Jeffersonian output, keep in mind that overlap alignment is visually stronge
 
 The bootstrap scripts install/check:
 
+- on Windows, PowerShell via `winget` if neither `pwsh.exe` nor `powershell.exe` is available
 - Python
 - FFmpeg/FFprobe
 - Python package dependencies from `requirements.txt`
@@ -119,8 +122,11 @@ The bootstrap scripts install/check:
 - on Windows, the official `whisper.cpp` x64 release zip into `../QuickFixAppDependencies/.tools/whisper`
 - on macOS, `whisper-cpp` through Homebrew
 - optional local MFA executable plus default UK English and US English MFA acoustic/dictionary presets
+- optional local sherpa-onnx Python package plus local speaker segmentation/embedding ONNX models when the advanced sherpa setup button is used
 
 The default model is downloaded during setup/launch from the `ggml-org/whisper.cpp` model distribution on Hugging Face and verified by SHA1 checksum before use. The Windows `whisper.cpp` zip is downloaded from the official `ggml-org/whisper.cpp` GitHub release and verified by SHA256 checksum before use. These are local files after download; recordings are still processed locally.
+
+The optional sherpa-onnx setup downloads package/model files only into the local Python environment and shared dependency folder. It is an explicit setup action, not part of recording processing, and it does not upload media, transcripts, filenames, diarization data, or processing results.
 
 On Linux, setup installs Python and FFmpeg through the system package manager. If Homebrew is available, it also installs `whisper-cpp`; otherwise, choose or install a local `whisper.cpp` executable manually.
 
@@ -152,6 +158,13 @@ QuickFixAppDependencies/.tools/whisper/models/
 
 QuickFixTranscription can reuse shared FFmpeg, whisper.cpp, Whisper models, IPA fonts, and MFA assets when they are already present. You can also choose the executable and model manually in the app.
 
+QuickFixTranscription also looks for optional sherpa-onnx models in:
+
+```text
+QuickFixAppDependencies/.tools/sherpa-onnx/
+QuickFixAppDependencies/models/sherpa-onnx/
+```
+
 ## GitHub Upload
 
 This folder is intended to be uploaded to GitHub as source code only.
@@ -171,10 +184,11 @@ After someone clones/downloads the repository, they can run the app by clicking 
 
 ### Windows
 
-```powershell
-powershell.exe -ExecutionPolicy Bypass -File .\agent-bootstrap.ps1 -Yes
+```bat
 .\Run QuickFixTranscription Windows.cmd
 ```
+
+The Windows launcher checks for `pwsh.exe` or `powershell.exe` first. If neither is available, it tries to install PowerShell with `winget`, then continues setup.
 
 ### Linux/macOS
 
