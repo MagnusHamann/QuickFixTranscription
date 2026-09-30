@@ -1,0 +1,3 @@
+PySide6>=6.7
+pypinyin>=0.51
+sherpa-onnx==1.12.38
