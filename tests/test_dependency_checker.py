@@ -30,6 +30,15 @@ class DependencyCheckerTests(unittest.TestCase):
             requirements.write_text("PySide6>=6.7\n", encoding="utf-8")
             self.assertEqual(unsatisfied_requirements(requirements), ())
 
+    def test_runtime_check_parser_is_declared_as_a_direct_requirement(self) -> None:
+        requirements = ROOT / "QuickFixTranscription" / "requirements.txt"
+        requirement_names = {
+            line.split("=", 1)[0].split(">", 1)[0].strip().lower()
+            for line in requirements.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        self.assertIn("packaging", requirement_names)
+
     def test_local_runtime_check_reports_missing_requirement(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             requirements = Path(folder) / "requirements.txt"
