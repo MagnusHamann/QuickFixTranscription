@@ -6,13 +6,27 @@ import wave
 from pathlib import Path
 from unittest.mock import patch
 
-from transcription.dote_diarization import _map_and_merge_turns, _raw_segments
+from transcription.dote_diarization import _map_and_merge_turns, _raw_segments, _read_canonical_wav
 from transcription.dote_engine import DoteWhisperEngine, _segments_for_turn
 from transcription.models import TranscriptResult, TranscriptSegment, WordToken
 from transcription.pyannote_diarization import DiarizationResult, DiarizationTurn
 
 
 class DotePipelineTests(unittest.TestCase):
+    def test_canonical_wav_loader_has_its_numpy_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            wav_path = Path(folder) / "canonical.wav"
+            with wave.open(str(wav_path), "wb") as handle:
+                handle.setnchannels(1)
+                handle.setsampwidth(2)
+                handle.setframerate(16000)
+                handle.writeframes(b"\x01\x00" * 1600)
+
+            samples, duration = _read_canonical_wav(wav_path)
+
+        self.assertEqual(samples.shape, (1600,))
+        self.assertAlmostEqual(duration, 0.1)
+
     def test_installed_sherpa_result_shape_uses_sorted_segment_return_value(self) -> None:
         expected = ({"start": 0.0, "end": 1.0, "speaker": 0},)
 
