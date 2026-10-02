@@ -26,6 +26,9 @@ from transcription.dependencies import DependencyStatus, dependency_status, find
 from transcription.languages import LANGUAGE_CHOICES
 from transcription.mfa_presets import MFA_PRESETS, language_codes_with_mfa_presets, mfa_preset_by_id, preset_for_language_code
 from transcription.models import (
+    ASR_BACKEND_DOTE_WHISPER,
+    ASR_BACKEND_LABELS,
+    ASR_BACKEND_DANISH_WHISPER,
     BROAD_JEFFERSONIAN_TRANSCRIPTION,
     NARROW_JEFFERSONIAN_TRANSCRIPTION,
     TRANSCRIPTION_MODE_LABELS,
@@ -39,6 +42,7 @@ class TranscriptionOptionsPanel(QWidget):
 
     options_changed = Signal()
     mfa_preset_download_requested = Signal(str)
+    danish_whisper_install_requested = Signal()
     clear_cache_requested = Signal()
 
     def __init__(self) -> None:
@@ -52,6 +56,23 @@ class TranscriptionOptionsPanel(QWidget):
         self.model_path.setPlaceholderText("Path to local Whisper model")
         self.whisper_browse = QPushButton("Browse")
         self.model_browse = QPushButton("Browse")
+
+        self.asr_backend = QComboBox()
+        for backend, label in ASR_BACKEND_LABELS.items():
+            self.asr_backend.addItem(label, backend)
+        self.danish_model_path = QLineEdit()
+        self.danish_model_path.setPlaceholderText("Path to local Røst v3 model folder")
+        self.danish_model_browse = QPushButton("Browse")
+        self.install_danish_whisper = QPushButton("Install Røst v3 Danish Whisper")
+        self.install_danish_whisper.setToolTip(
+            "Download the ungated Danish conversational Whisper model for offline transcription."
+        )
+        self.danish_hint = QLabel(
+            "Optional Danish ASR trained on conversational and read Danish. Setup downloads model files only; "
+            "recording processing remains offline."
+        )
+        self.danish_hint.setWordWrap(True)
+        self.danish_hint.setStyleSheet("color: #5a6472;")
 
         self.language = QComboBox()
         for code, label in LANGUAGE_CHOICES:
@@ -134,8 +155,9 @@ class TranscriptionOptionsPanel(QWidget):
         self.review_note = QPlainTextEdit()
         self.review_note.setPlainText(
             "Choose RTF, structured JSON, or both. Both files are generated from the same transcription run.\n\n"
-            "Both transcription types use one integrated DOTE base pipeline: a local FFmpeg WAV, local Sherpa-ONNX "
-            "speaker diarization, then local whisper.cpp inside each speaker turn. Broad Jeffersonian transcription "
+            "Both transcription types use one integrated DOTE base pipeline: a local FFmpeg WAV and local Sherpa-ONNX "
+            "speaker diarization. Choose DOTE Whisper for general ASR or Røst v3 for Danish text and word timing. "
+            "Broad Jeffersonian transcription "
             "uses that same verbatim result and then marks temporal and sequential "
             "notation: SP1/SP2/SP3 labels, configurable line wrapping, no ASR punctuation, [overlap] brackets, "
             "latching with =, and timed pauses of 0.2s+. Voice-quality detail is left for later review.\n\n"
@@ -193,6 +215,8 @@ class TranscriptionOptionsPanel(QWidget):
 
         self.output_group = QGroupBox("Output")
         output_layout = QVBoxLayout(self.output_group)
+        output_layout.addWidget(QLabel("Speech recognition"))
+        output_layout.addWidget(self.asr_backend)
         output_layout.addWidget(QLabel("Language"))
         output_layout.addWidget(self.language)
         output_layout.addWidget(QLabel("Model profile"))
@@ -237,6 +261,15 @@ class TranscriptionOptionsPanel(QWidget):
         engine_layout.addRow("DOTE whisper.cpp", whisper_row)
         engine_layout.addRow("Model", model_row)
 
+        self.danish_group = QGroupBox("Optional Danish Røst v3 Whisper")
+        danish_layout = QVBoxLayout(self.danish_group)
+        danish_path_row = QHBoxLayout()
+        danish_path_row.addWidget(self.danish_model_path, stretch=1)
+        danish_path_row.addWidget(self.danish_model_browse)
+        danish_layout.addLayout(danish_path_row)
+        danish_layout.addWidget(self.install_danish_whisper)
+        danish_layout.addWidget(self.danish_hint)
+
         self.mfa_group = QGroupBox("Narrow Jeffersonian local MFA")
         mfa_layout = QVBoxLayout(self.mfa_group)
         mfa_preset_row = QHBoxLayout()
@@ -270,6 +303,7 @@ class TranscriptionOptionsPanel(QWidget):
         performance_layout.addWidget(self.clear_cache)
 
         advanced_content_layout.addWidget(self.engine_group)
+        advanced_content_layout.addWidget(self.danish_group)
         advanced_content_layout.addWidget(self.performance_group)
         advanced_content_layout.addWidget(self.display_group)
         advanced_layout.addWidget(self.advanced_content)
@@ -277,6 +311,8 @@ class TranscriptionOptionsPanel(QWidget):
         for button in (
             self.whisper_browse,
             self.model_browse,
+            self.danish_model_browse,
+            self.install_danish_whisper,
             self.mfa_browse,
             self.mfa_model_browse,
             self.mfa_dictionary_browse,
@@ -309,6 +345,8 @@ class TranscriptionOptionsPanel(QWidget):
     def _wire_events(self) -> None:
         self.whisper_browse.clicked.connect(self.choose_whisper)
         self.model_browse.clicked.connect(self.choose_model)
+        self.danish_model_browse.clicked.connect(self.choose_danish_model)
+        self.install_danish_whisper.clicked.connect(lambda: self.danish_whisper_install_requested.emit())
         self.mfa_browse.clicked.connect(self.choose_mfa)
         self.mfa_model_browse.clicked.connect(self.choose_mfa_model)
         self.mfa_dictionary_browse.clicked.connect(self.choose_mfa_dictionary)
@@ -319,6 +357,7 @@ class TranscriptionOptionsPanel(QWidget):
         self.advanced_toggle.toggled.connect(self._toggle_advanced_setup)
         self.transcribe_section.toggled.connect(self._update_visibility)
         self.transcription_mode.currentIndexChanged.connect(self._update_visibility)
+        self.asr_backend.currentIndexChanged.connect(self._asr_backend_changed)
         self.mfa_preset.currentIndexChanged.connect(self._mfa_preset_changed)
         self.language.currentIndexChanged.connect(self._language_changed)
         self.model_profile.currentIndexChanged.connect(lambda _value: self.options_changed.emit())
@@ -327,6 +366,7 @@ class TranscriptionOptionsPanel(QWidget):
         for widget in (
             self.whisper_path,
             self.model_path,
+            self.danish_model_path,
             self.start_time,
             self.finish_time,
             self.mfa_path,
@@ -362,6 +402,8 @@ class TranscriptionOptionsPanel(QWidget):
         self.start_time.setEnabled(enabled)
         self.finish_time.setEnabled(enabled)
         mode = self.current_transcription_mode()
+        danish_selected = self.current_asr_backend() == ASR_BACKEND_DANISH_WHISPER
+        self.language.setEnabled(not danish_selected)
         is_jeffersonian = mode != VERBATIM_TRANSCRIPTION
         mfa_enabled = mode == NARROW_JEFFERSONIAN_TRANSCRIPTION
         self.jeffersonian_line_width.setEnabled(is_jeffersonian)
@@ -383,11 +425,21 @@ class TranscriptionOptionsPanel(QWidget):
             widget.setEnabled(mfa_enabled)
         self._update_mfa_preset_hint()
 
+    def _asr_backend_changed(self) -> None:
+        if self.current_asr_backend() == ASR_BACKEND_DANISH_WHISPER:
+            danish_index = self.language.findData("da")
+            if danish_index >= 0:
+                self.language.setCurrentIndex(danish_index)
+        self._update_visibility()
+        self.options_changed.emit()
+
     def apply_dependency_status(self, status: DependencyStatus) -> None:
         if status.whisper_path and not self.whisper_path.text().strip():
             self.whisper_path.setText(status.whisper_path)
         if status.model_path and not self.model_path.text().strip():
             self.model_path.setText(status.model_path)
+        if status.danish_whisper_model_path and not self.danish_model_path.text().strip():
+            self.danish_model_path.setText(status.danish_whisper_model_path)
         if status.fully_ready:
             self.status_label.setText("Ready: all local dependencies found.")
         else:
@@ -401,6 +453,17 @@ class TranscriptionOptionsPanel(QWidget):
     def request_mfa_preset_download(self) -> None:
         self.mfa_preset_download_requested.emit(self.current_mfa_preset_id())
 
+    def set_danish_whisper_install_running(self, running: bool) -> None:
+        self.install_danish_whisper.setEnabled(not running)
+        self.danish_model_browse.setEnabled(not running)
+        if running:
+            self.danish_hint.setText("Installing Røst v3 locally. The model is about 3.1 GB, so this may take a while.")
+        else:
+            self.danish_hint.setText(
+                "Optional Danish ASR trained on conversational and read Danish. Setup downloads model files only; "
+                "recording processing remains offline."
+            )
+
     def set_mfa_download_running(self, running: bool) -> None:
         narrow = self.current_transcription_mode() == NARROW_JEFFERSONIAN_TRANSCRIPTION
         self.download_mfa_preset.setEnabled(not running and narrow)
@@ -412,6 +475,9 @@ class TranscriptionOptionsPanel(QWidget):
 
     def current_transcription_mode(self) -> str:
         return str(self.transcription_mode.currentData() or VERBATIM_TRANSCRIPTION)
+
+    def current_asr_backend(self) -> str:
+        return str(self.asr_backend.currentData() or ASR_BACKEND_DOTE_WHISPER)
 
     def current_mfa_preset_id(self) -> str:
         return str(self.mfa_preset.currentData() or "")
@@ -484,6 +550,13 @@ class TranscriptionOptionsPanel(QWidget):
         if path:
             self.model_path.setText(path)
 
+    def choose_danish_model(self) -> None:
+        current = self.danish_model_path.text().strip()
+        start_dir = current if current else ""
+        path = QFileDialog.getExistingDirectory(self, "Choose local Røst v3 model folder", start_dir)
+        if path:
+            self.danish_model_path.setText(path)
+
     def choose_mfa(self) -> None:
         current = self.mfa_path.text().strip()
         start_dir = str(Path(current).parent) if current else ""
@@ -509,6 +582,8 @@ class TranscriptionOptionsPanel(QWidget):
         return TranscriptionOptions(
             whisper_executable=self.whisper_path.text().strip(),
             model_path=self.model_path.text().strip(),
+            asr_backend=self.current_asr_backend(),
+            danish_model_path=self.danish_model_path.text().strip(),
             transcription_mode=self.current_transcription_mode(),
             language_code=str(self.language.currentData() or ""),
             transcribe_section=self.transcribe_section.isChecked(),

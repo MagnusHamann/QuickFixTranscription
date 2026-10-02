@@ -90,6 +90,24 @@ class DependencyBootstrapWorker(QObject):
         self.finished.emit(ok)
 
 
+class DanishWhisperSetupWorker(QObject):
+    """Install the requested ungated Røst v3 model without blocking the UI."""
+
+    log_message = Signal(str)
+    finished = Signal(bool)
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            from transcription.danish_whisper_setup import setup_danish_whisper
+
+            ok = setup_danish_whisper(self.log_message.emit) is not None
+        except Exception as exc:
+            self.log_message.emit(f"Røst v3 setup failed: {exc}")
+            ok = False
+        self.finished.emit(ok)
+
+
 class TranscriptionWindow(QMainWindow):
     """Top-level UI for local batch transcription."""
 
@@ -103,6 +121,8 @@ class TranscriptionWindow(QMainWindow):
         self.mfa_download_worker: MfaPresetDownloadWorker | None = None
         self.bootstrap_thread: QThread | None = None
         self.bootstrap_worker: DependencyBootstrapWorker | None = None
+        self.danish_setup_thread: QThread | None = None
+        self.danish_setup_worker: DanishWhisperSetupWorker | None = None
         self.runner = FFmpegRunner()
 
         self.drop_zone = DragDropWidget(
@@ -204,6 +224,7 @@ class TranscriptionWindow(QMainWindow):
         self.start_button.clicked.connect(self.start_transcription)
         self.cancel_button.clicked.connect(self.cancel_transcription)
         self.options_panel.mfa_preset_download_requested.connect(self.download_mfa_preset)
+        self.options_panel.danish_whisper_install_requested.connect(self.install_danish_whisper)
         self.options_panel.clear_cache_requested.connect(self.clear_local_cache)
 
     def _start_dependency_bootstrap(self) -> None:
@@ -430,6 +451,46 @@ class TranscriptionWindow(QMainWindow):
         self.mfa_download_thread.finished.connect(self.mfa_download_thread.deleteLater)
         self.mfa_download_thread.start()
 
+    @Slot()
+    def install_danish_whisper(self) -> None:
+        if self.worker_thread is not None:
+            QMessageBox.information(self, "Transcription running", "Finish or cancel transcription before installing Røst v3.")
+            return
+        if self.danish_setup_thread is not None:
+            QMessageBox.information(self, "Røst v3 setup running", "Røst v3 setup is already running.")
+            return
+
+        notice = QMessageBox(self)
+        notice.setIcon(QMessageBox.Information)
+        notice.setWindowTitle("Install Røst v3 Danish Whisper")
+        notice.setText("Røst v3 is an optional Danish conversational speech-recognition model.")
+        notice.setInformativeText(
+            "QuickFix will download about 3.1 GB of model files and an isolated Faster-Whisper runtime during setup. "
+            "The model is ungated and does not require an access token. Recordings and transcripts are never uploaded."
+        )
+        continue_button = notice.addButton("Install", QMessageBox.AcceptRole)
+        notice.addButton("Cancel", QMessageBox.RejectRole)
+        notice.exec()
+        if notice.clickedButton() != continue_button:
+            return
+
+        self.append_log("Starting Røst v3 Danish Whisper setup. This setup step may access the internet.")
+        self.append_log("No recording, transcript, filename, or media-derived data is sent during setup.")
+        self.options_panel.set_danish_whisper_install_running(True)
+        self.start_button.setEnabled(False)
+        self.status.showMessage("Installing Røst v3 locally...")
+
+        self.danish_setup_thread = QThread(self)
+        self.danish_setup_worker = DanishWhisperSetupWorker()
+        self.danish_setup_worker.moveToThread(self.danish_setup_thread)
+        self.danish_setup_thread.started.connect(self.danish_setup_worker.run)
+        self.danish_setup_worker.log_message.connect(self.append_log)
+        self.danish_setup_worker.finished.connect(self.danish_whisper_setup_finished)
+        self.danish_setup_worker.finished.connect(self.danish_setup_thread.quit)
+        self.danish_setup_worker.finished.connect(self.danish_setup_worker.deleteLater)
+        self.danish_setup_thread.finished.connect(self.danish_setup_thread.deleteLater)
+        self.danish_setup_thread.start()
+
     @Slot(str)
     def append_log(self, message: str) -> None:
         self.log.appendPlainText(message)
@@ -445,6 +506,28 @@ class TranscriptionWindow(QMainWindow):
             QMessageBox.information(self, "MFA preset ready", "The selected local MFA preset is ready.")
         else:
             QMessageBox.warning(self, "MFA preset problem", "The selected MFA preset could not be downloaded.")
+
+    @Slot(bool)
+    def danish_whisper_setup_finished(self, ok: bool) -> None:
+        self.danish_setup_worker = None
+        self.danish_setup_thread = None
+        self.options_panel.set_danish_whisper_install_running(False)
+        status = dependency_status()
+        self.options_panel.apply_dependency_status(status)
+        self.start_button.setEnabled(status.ready_for_transcription)
+        self.status.showMessage("Røst v3 setup complete." if ok else "Røst v3 setup failed.")
+        if ok:
+            QMessageBox.information(
+                self,
+                "Røst v3 ready",
+                "Røst v3 is installed locally. Choose Røst v3 Danish Whisper under Speech recognition.",
+            )
+        else:
+            QMessageBox.warning(
+                self,
+                "Røst v3 setup problem",
+                "Røst v3 could not be installed. Review the local processing log; DOTE Whisper remains available.",
+            )
 
     @Slot(bool)
     def bootstrap_finished(self, ok: bool) -> None:

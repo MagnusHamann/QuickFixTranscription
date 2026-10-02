@@ -2,7 +2,7 @@
 
 QuickFixTranscription is a local desktop app for batch transcription of sensitive audio and video recordings.
 
-The app uses one integrated DOTE base pipeline: local FFmpeg extraction, local Sherpa-ONNX speaker diarization, and DOTE's bundled local `whisper.cpp`. Recording processing is local-only: media, extracted audio, transcripts, filenames, diarization data, language-detection data, and processing results must not be sent to external services.
+The app uses one integrated DOTE base pipeline: local FFmpeg extraction, local Sherpa-ONNX speaker diarization, and a selectable local ASR backend. DOTE's bundled `whisper.cpp` is the default for all supported languages. The optional Røst v3 Faster-Whisper backend improves Danish conversational text and supplies native word timestamps. Recording processing is local-only: media, extracted audio, transcripts, filenames, diarization data, language-detection data, and processing results must not be sent to external services.
 
 ## Features
 
@@ -11,6 +11,7 @@ The app uses one integrated DOTE base pipeline: local FFmpeg extraction, local S
 - Optional start and finish time selection using local FFmpeg segment extraction.
 - Language dropdown with `Auto-detect` and common Whisper language options.
 - DOTE's bundled local `whisper.cpp` executable and a local model path selector.
+- Optional local Røst v3 Danish Whisper ASR. It is selected under **Speech recognition** and installed through the Advanced setup action without an account or access token.
 - Optional **Prefer GPU acceleration when available** checkbox for local `whisper.cpp` builds that support GPU inference; unticking it forces CPU mode.
 - Preflight check before each batch for local dependencies, disk space, GPU hints, model/profile fit, cache location, and cloud-synced source/output folders.
 - Model profile selector for fast draft, balanced, better accuracy, and highest accuracy guidance.
@@ -18,7 +19,7 @@ The app uses one integrated DOTE base pipeline: local FFmpeg extraction, local S
 - Resume mode skips a source when every selected output format is already current.
 - Independent RTF and structured JSON output checkboxes; select either format or both from one transcription run.
 - Transcription type selector: verbatim transcription or broad Jeffersonian transcription.
-- Verbatim is now the direct output of the integrated DOTE base pipeline.
+- Verbatim is the direct output of the integrated DOTE base pipeline with the selected local ASR backend.
 - Broad Jeffersonian uses exactly the same DOTE words, timings, and speaker turns, then adds QuickFix temporal/sequential notation such as overlap, latching, and timed pauses. It does not run a separate ASR or diarization pass.
 - JSON exports preserve DOTE-style segment and word timestamps, stable speaker labels, confidence values, uncertainty flags, and the rendered transcript lines.
 - Optional IPA-capable Charis font for regular and Jeffersonian RTF export.
@@ -43,7 +44,7 @@ The app warns when sources or outputs appear to be inside OneDrive, Dropbox, iCl
 
 ## Jeffersonian Output
 
-The selected output format or formats are generated locally. DOTE first determines speaker turns with Sherpa-ONNX, then transcribes each turn with DOTE's bundled Whisper executable using no cross-turn context. Verbatim renders that structured result directly. Broad Jeffersonian consumes the same result and adds deterministic temporal/sequential notation.
+The selected output format or formats are generated locally. DOTE first determines speaker turns with Sherpa-ONNX. DOTE Whisper transcribes each turn with the bundled Whisper executable using no cross-turn context. When Røst v3 is selected, its local Faster-Whisper runtime produces Danish text and word timestamps directly for the same diarized turns. Verbatim renders that structured result directly. Broad Jeffersonian consumes the same result and adds deterministic temporal/sequential notation.
 
 Broad Jeffersonian transcription supports:
 
@@ -89,7 +90,9 @@ The bootstrap scripts install/check:
 - `sherpa-onnx==1.12.38`
 - the pinned local Sherpa segmentation and ERes2Net speaker-embedding models under `../QuickFixAppDependencies/.tools/dote-whisper/models/diarization`
 
-The default Whisper model is downloaded during setup/launch from the `ggml-org/whisper.cpp` model distribution on Hugging Face and verified by SHA1 checksum before use. The DOTE installer and both Sherpa models are downloaded only during setup and verified by SHA256 checksum before use. Recording processing performs no downloads and runs with the app's offline guard enabled.
+Røst v3 is not part of automatic startup bootstrap because its converted weights occupy about 3.1 GB and are needed only for Danish. To install it, open **Advanced local setup** and click **Install Røst v3 Danish Whisper**. No account or access token is required. The model is installed under `../QuickFixAppDependencies/.tools/roest-v3-whisper-1.5b-ct2`; Faster-Whisper and CTranslate2 are isolated under `../QuickFixAppDependencies/.venvs/QuickFixDanishWhisper`. The converted model inherits the source model's OpenRAIL-derived terms, which allow transcription and commercial use but restrict speech synthesis and biometric identification.
+
+The default Whisper model is downloaded during setup/launch from the `ggml-org/whisper.cpp` model distribution on Hugging Face and verified by SHA1 checksum before use. The DOTE installer and both Sherpa models are downloaded only during setup and verified by SHA256 checksum before use. Optional Røst v3 files are downloaded only after the explicit Danish-model setup action. Recording processing performs no downloads and runs with the app's offline guard enabled.
 
 Local diarization setup downloads package/model files only into the local Python environment and shared dependency folder. It is a setup action, not part of recording processing, and it does not upload media, transcripts, filenames, diarization data, or processing results.
 
@@ -113,6 +116,7 @@ The app checks common local locations inside `QuickFixAppDependencies` first, in
 ```text
 QuickFixAppDependencies/.tools/dote-whisper/installers/
 QuickFixAppDependencies/.tools/dote-whisper/models/diarization/
+QuickFixAppDependencies/.tools/roest-v3-whisper-1.5b-ct2/
 QuickFixAppDependencies/models/
 ```
 
@@ -120,7 +124,7 @@ QuickFixTranscription uses the Whisper executable bundled with the installed DOT
 
 ## Local Cache And Resume
 
-The structured DOTE base transcript is cached locally under the computer's local app-data/cache area, not in the source media folder. This lets the user switch between verbatim and Broad Jeffersonian rendering without repeating ASR or diarization. The cache contains media-derived transcript artifacts, so keep it enabled only on trusted local machines and use **Clear local cache** when needed.
+The structured DOTE base transcript is cached locally under the computer's local app-data/cache area, not in the source media folder. Cache keys include the selected ASR backend and local model fingerprint, so DOTE Whisper and Røst v3 results cannot be mixed. This lets the user switch between verbatim and Broad Jeffersonian rendering without repeating ASR or diarization. The cache contains media-derived transcript artifacts, so keep it enabled only on trusted local machines and use **Clear local cache** when needed.
 
 Temporary WAV and analysis files are created in the local app temp area and cleaned up after each file unless a development/debug option keeps temp audio.
 
