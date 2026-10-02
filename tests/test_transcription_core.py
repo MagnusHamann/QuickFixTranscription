@@ -35,7 +35,7 @@ from transcription.media import build_audio_extract_command, build_channel_extra
 from transcription.mfa_alignment import AlignedInterval, apply_mfa_word_alignment, parse_textgrid, phone_tier_lines
 from transcription.mfa_presets import DEFAULT_SETUP_MFA_PRESET_IDS, MFA_PRESETS, mfa_preset_by_id, preset_for_language_code
 from transcription.models import (
-    ASR_BACKEND_SAGA_2_M,
+    ASR_BACKEND_DANISH_WHISPER,
     BROAD_JEFFERSONIAN_TRANSCRIPTION,
     NARROW_JEFFERSONIAN_TRANSCRIPTION,
     VERBATIM_TRANSCRIPTION,
@@ -93,60 +93,60 @@ class TimeRangeTests(unittest.TestCase):
 
 
 class SagaOptionsTests(unittest.TestCase):
-    def test_saga_options_require_danish_and_a_ready_local_runtime(self) -> None:
+    def test_danish_whisper_options_require_danish_and_a_ready_local_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             whisper = root / "whisper.exe"
             model = root / "model.bin"
-            saga = root / "saga"
+            danish_model = root / "roest"
             whisper.write_bytes(b"local")
             model.write_bytes(b"local")
-            saga.mkdir()
+            danish_model.mkdir()
             options = TranscriptionOptions(
                 whisper_executable=str(whisper),
                 model_path=str(model),
-                asr_backend=ASR_BACKEND_SAGA_2_M,
-                saga_model_path=str(saga),
+                asr_backend=ASR_BACKEND_DANISH_WHISPER,
+                danish_model_path=str(danish_model),
                 language_code="da",
             )
 
-            with patch("transcription.saga_setup.saga_model_is_ready", return_value=True), patch(
-                "transcription.saga_setup.saga_runtime_is_ready", return_value=True
+            with patch("transcription.danish_whisper_setup.danish_whisper_model_is_ready", return_value=True), patch(
+                "transcription.danish_whisper_setup.danish_whisper_runtime_is_ready", return_value=True
             ):
                 self.assertEqual(options.validate(), (None, None))
 
             wrong_language = TranscriptionOptions(
                 whisper_executable=str(whisper),
                 model_path=str(model),
-                asr_backend=ASR_BACKEND_SAGA_2_M,
-                saga_model_path=str(saga),
+                asr_backend=ASR_BACKEND_DANISH_WHISPER,
+                danish_model_path=str(danish_model),
                 language_code="en",
             )
             with self.assertRaisesRegex(ValueError, "Danish only"):
                 wrong_language.validate()
 
-    def test_cache_key_changes_between_dote_and_saga(self) -> None:
+    def test_cache_key_changes_between_dote_and_danish_whisper(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             source = root / "source.wav"
             whisper = root / "whisper.exe"
             model = root / "model.bin"
-            saga = root / "saga"
-            saga.mkdir()
-            for path in (source, whisper, model, saga / "model.safetensors"):
+            danish_model = root / "roest"
+            danish_model.mkdir()
+            for path in (source, whisper, model, danish_model / "model.bin"):
                 path.write_bytes(b"local")
             dote = TranscriptionOptions(str(whisper), str(model))
-            saga_options = TranscriptionOptions(
+            danish_options = TranscriptionOptions(
                 str(whisper),
                 str(model),
-                asr_backend=ASR_BACKEND_SAGA_2_M,
-                saga_model_path=str(saga),
+                asr_backend=ASR_BACKEND_DANISH_WHISPER,
+                danish_model_path=str(danish_model),
                 language_code="da",
             )
 
             self.assertNotEqual(
                 transcription_cache.cache_key("dote_base", source, dote),
-                transcription_cache.cache_key("dote_base", source, saga_options),
+                transcription_cache.cache_key("dote_base", source, danish_options),
             )
 
 

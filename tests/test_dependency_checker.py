@@ -18,6 +18,7 @@ from QuickFixDependencyCheck.checks import (  # noqa: E402
     build_dependency_checks,
     check_ffmpeg_runtime,
     check_python_runtime,
+    check_danish_whisper_runtime,
     check_whisper_model,
     command_line_report,
 )
@@ -76,6 +77,14 @@ class DependencyCheckerTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertIn("whisper model", result.headline.lower())
         self.assertIn("C:/models/custom.gguf", "\n".join(result.details).replace("\\", "/"))
+
+    def test_optional_danish_whisper_check_does_not_fail_when_not_installed(self) -> None:
+        with patch("QuickFixDependencyCheck.checks.find_danish_whisper_model", return_value=None), patch(
+            "QuickFixDependencyCheck.checks.danish_whisper_runtime_is_ready", return_value=False
+        ):
+            result = check_danish_whisper_runtime()
+        self.assertEqual(result.severity, "warn")
+        self.assertIn("DOTE Whisper remains available", result.headline)
 
     def test_command_line_report_includes_each_selected_section(self) -> None:
         fake_result = DependencyCheckResult("fake", "Fake dependency", "pass", "It is ready.", ("local only",))
