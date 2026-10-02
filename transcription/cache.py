@@ -14,7 +14,7 @@ from transcription.models import TranscriptResult, TranscriptSegment, Transcript
 from transcription.text_display import is_placeholder_display_text
 
 
-CACHE_SCHEMA_VERSION = 5
+CACHE_SCHEMA_VERSION = 7
 WHISPER_TOKENIZATION_VERSION = 2
 SPEAKER_RECONCILIATION_VERSION = 6
 
@@ -66,6 +66,10 @@ def cache_key(stage: str, source_path: Path, options: TranscriptionOptions, extr
         "start_time": options.start_time,
         "finish_time": options.finish_time,
         "model_path": _file_fingerprint(options.model_path),
+        "asr_backend": options.asr_backend,
+        "danish_whisper_model": _file_fingerprint(
+            str(Path(options.danish_model_path).expanduser() / "model.bin")
+        ) if options.danish_model_path.strip() else None,
         "whisper_executable": _file_fingerprint(options.whisper_executable),
         "whisper_tokenization_version": WHISPER_TOKENIZATION_VERSION,
     }

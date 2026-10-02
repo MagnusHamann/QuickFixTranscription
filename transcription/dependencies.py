@@ -16,6 +16,7 @@ from transcription.dote_setup import (
     find_dote_executable,
     find_dote_whisper_executable,
 )
+from transcription.danish_whisper_setup import find_danish_whisper_model, danish_whisper_runtime_is_ready
 from transcription.mfa_presets import DEFAULT_MFA_PRESET_ID, mfa_preset_by_id
 from quickfix_sibling_apps import quickfix_app_roots
 
@@ -62,6 +63,8 @@ class DependencyStatus:
     dote_segmentation_model_path: str | None = None
     dote_embedding_model_path: str | None = None
     sherpa_onnx_ready: bool = False
+    danish_whisper_model_path: str | None = None
+    danish_whisper_runtime_ready: bool = False
 
     @property
     def ready_for_transcription(self) -> bool:
@@ -355,4 +358,6 @@ def dependency_status() -> DependencyStatus:
         dote_segmentation_model_path=str(segmentation) if models_ready else None,
         dote_embedding_model_path=str(embedding) if models_ready else None,
         sherpa_onnx_ready=importlib.util.find_spec("sherpa_onnx") is not None,
+        danish_whisper_model_path=find_danish_whisper_model(),
+        danish_whisper_runtime_ready=danish_whisper_runtime_is_ready(),
     )

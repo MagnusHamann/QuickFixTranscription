@@ -19,6 +19,7 @@ from transcription.json_exporter import has_current_json_output, write_json_tran
 from transcription.media import build_audio_extract_command, command_to_text
 from transcription.mfa_alignment import apply_mfa_word_alignment, run_mfa_alignment
 from transcription.models import (
+    ASR_BACKEND_DANISH_WHISPER,
     BROAD_JEFFERSONIAN_TRANSCRIPTION,
     NARROW_JEFFERSONIAN_TRANSCRIPTION,
     TRANSCRIPTION_MODE_LABELS,
@@ -65,6 +66,7 @@ class TranscriptionBatchProcessor(QObject):
             shutil.rmtree(temp_dir, ignore_errors=True)
 
     def _selected_output_key(self, record: MediaRecord, mode: str) -> str:
+        base_pipeline = "dote-1.0.2-roest-v3-v1" if self.options.asr_backend == ASR_BACKEND_DANISH_WHISPER else "dote-1.0.2"
         return cache_key(
             "selected_output",
             record.path,
@@ -73,7 +75,7 @@ class TranscriptionBatchProcessor(QObject):
                 "mode": mode,
                 "jeffersonian_line_width": self.options.jeffersonian_line_width,
                 "known_speakers": self.options.known_speakers,
-                "base_pipeline": "dote-1.0.2",
+                "base_pipeline": base_pipeline,
                 "use_ipa_font_regular": self.options.use_ipa_font_regular,
                 "use_ipa_font_jeffersonian": self.options.use_ipa_font_jeffersonian,
             },
@@ -130,6 +132,8 @@ class TranscriptionBatchProcessor(QObject):
             self.options.model_path,
             self.options.prefer_gpu,
             known_speakers=self.options.known_speakers,
+            asr_backend=self.options.asr_backend,
+            danish_model_path=self.options.danish_model_path,
         )
 
         for index, record in enumerate(self.records, start=1):
@@ -196,7 +200,11 @@ class TranscriptionBatchProcessor(QObject):
                         temp_dir,
                         {
                             "audio_role": "main",
-                            "base_pipeline": "dote-1.0.2",
+                            "base_pipeline": (
+                                "dote-1.0.2-roest-v3-v1"
+                                if self.options.asr_backend == ASR_BACKEND_DANISH_WHISPER
+                                else "dote-1.0.2"
+                            ),
                             "known_speakers": self.options.known_speakers,
                         },
                     )

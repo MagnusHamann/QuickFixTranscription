@@ -12,11 +12,13 @@ from transcription.cache import local_cache_root, local_temp_root
 from transcription.dependencies import DependencyStatus, dependency_status
 from transcription.file_utils import output_directory_for
 from transcription.models import (
+    ASR_BACKEND_DANISH_WHISPER,
     BROAD_JEFFERSONIAN_TRANSCRIPTION,
     VERBATIM_TRANSCRIPTION,
     MediaRecord,
     TranscriptionOptions,
 )
+from transcription.danish_whisper_setup import danish_whisper_model_is_ready, danish_whisper_runtime_is_ready
 
 
 CLOUD_SYNC_MARKERS = {
@@ -158,6 +160,11 @@ def _check_dependencies(
         issues.append(PreflightIssue("error", "DOTE's pinned local speaker-diarization models are missing."))
     if not status.sherpa_onnx_ready:
         issues.append(PreflightIssue("error", "The pinned local sherpa-onnx runtime is missing."))
+    if options.asr_backend == ASR_BACKEND_DANISH_WHISPER:
+        if not options.danish_model_path.strip() or not danish_whisper_model_is_ready(options.danish_model_path):
+            issues.append(PreflightIssue("error", "The selected local Røst v3 model folder is missing or incomplete."))
+        if not danish_whisper_runtime_is_ready():
+            issues.append(PreflightIssue("error", "The local Røst v3 Python runtime is incomplete."))
 
 
 def _check_cloud_locations(
@@ -200,11 +207,13 @@ def _check_disk_space(issues: list[PreflightIssue], records: list[MediaRecord]) 
 
 def _check_gpu_preference(issues: list[PreflightIssue], options: TranscriptionOptions) -> None:
     if not options.prefer_gpu:
-        issues.append(PreflightIssue("info", "GPU preference is off; whisper.cpp will be forced into CPU mode."))
+        engine = "Røst v3 Faster-Whisper" if options.asr_backend == ASR_BACKEND_DANISH_WHISPER else "whisper.cpp"
+        issues.append(PreflightIssue("info", f"GPU preference is off; {engine} will be forced into CPU mode."))
         return
     hint = detect_whisper_gpu_hint(options.whisper_executable)
     if hint == "gpu-option-present":
-        issues.append(PreflightIssue("info", "GPU preference is on; the selected whisper.cpp binary exposes GPU-related options."))
+        engine = "Røst v3 Faster-Whisper" if options.asr_backend == ASR_BACKEND_DANISH_WHISPER else "the selected whisper.cpp binary"
+        issues.append(PreflightIssue("info", f"GPU preference is on; {engine} can use available local GPU support."))
     else:
         issues.append(
             PreflightIssue(
@@ -231,10 +240,15 @@ def _check_model_profile(issues: list[PreflightIssue], options: TranscriptionOpt
 def _check_pipeline_cost(issues: list[PreflightIssue], records: list[MediaRecord], options: TranscriptionOptions) -> None:
     mode = options.selected_mode()
     if mode == VERBATIM_TRANSCRIPTION:
+        engine = (
+            "local Røst v3 Faster-Whisper with native word timestamps"
+            if options.asr_backend == ASR_BACKEND_DANISH_WHISPER
+            else "whisper.cpp per speaker turn"
+        )
         issues.append(
             PreflightIssue(
                 "info",
-                "Verbatim mode uses the integrated local DOTE pipeline: FFmpeg, Sherpa-ONNX diarization, then whisper.cpp per speaker turn.",
+                f"Verbatim mode uses the integrated local DOTE pipeline: FFmpeg, Sherpa-ONNX diarization, then {engine}.",
             )
         )
     elif mode == BROAD_JEFFERSONIAN_TRANSCRIPTION:
