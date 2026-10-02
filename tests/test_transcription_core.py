@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import math
 import io
 import os
@@ -34,6 +35,7 @@ from transcription.media import build_audio_extract_command, build_channel_extra
 from transcription.mfa_alignment import AlignedInterval, apply_mfa_word_alignment, parse_textgrid, phone_tier_lines
 from transcription.mfa_presets import DEFAULT_SETUP_MFA_PRESET_IDS, MFA_PRESETS, mfa_preset_by_id, preset_for_language_code
 from transcription.models import (
+    ASR_BACKEND_SAGA_2_M,
     BROAD_JEFFERSONIAN_TRANSCRIPTION,
     NARROW_JEFFERSONIAN_TRANSCRIPTION,
     VERBATIM_TRANSCRIPTION,
@@ -70,6 +72,15 @@ from transcription.rtf_exporter import RTF_OUTPUT_VERSION_MARKER, rtf_escape, tr
 from transcription.time_utils import validate_time_range
 
 
+PYANNOTE_RUNTIME_AVAILABLE = bool(
+    importlib.util.find_spec("torch") is not None and importlib.util.find_spec("pyannote") is not None
+)
+requires_pyannote_runtime = unittest.skipUnless(
+    PYANNOTE_RUNTIME_AVAILABLE,
+    "optional legacy pyannote/Torch runtime is not installed",
+)
+
+
 class TimeRangeTests(unittest.TestCase):
     def test_optional_start_and_finish_are_validated(self) -> None:
         self.assertEqual(validate_time_range("01:00", "02:30"), (60, 150))
@@ -79,6 +90,64 @@ class TimeRangeTests(unittest.TestCase):
     def test_finish_must_be_after_start(self) -> None:
         with self.assertRaises(ValueError):
             validate_time_range("02:00", "01:59")
+
+
+class SagaOptionsTests(unittest.TestCase):
+    def test_saga_options_require_danish_and_a_ready_local_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            whisper = root / "whisper.exe"
+            model = root / "model.bin"
+            saga = root / "saga"
+            whisper.write_bytes(b"local")
+            model.write_bytes(b"local")
+            saga.mkdir()
+            options = TranscriptionOptions(
+                whisper_executable=str(whisper),
+                model_path=str(model),
+                asr_backend=ASR_BACKEND_SAGA_2_M,
+                saga_model_path=str(saga),
+                language_code="da",
+            )
+
+            with patch("transcription.saga_setup.saga_model_is_ready", return_value=True), patch(
+                "transcription.saga_setup.saga_runtime_is_ready", return_value=True
+            ):
+                self.assertEqual(options.validate(), (None, None))
+
+            wrong_language = TranscriptionOptions(
+                whisper_executable=str(whisper),
+                model_path=str(model),
+                asr_backend=ASR_BACKEND_SAGA_2_M,
+                saga_model_path=str(saga),
+                language_code="en",
+            )
+            with self.assertRaisesRegex(ValueError, "Danish only"):
+                wrong_language.validate()
+
+    def test_cache_key_changes_between_dote_and_saga(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "source.wav"
+            whisper = root / "whisper.exe"
+            model = root / "model.bin"
+            saga = root / "saga"
+            saga.mkdir()
+            for path in (source, whisper, model, saga / "model.safetensors"):
+                path.write_bytes(b"local")
+            dote = TranscriptionOptions(str(whisper), str(model))
+            saga_options = TranscriptionOptions(
+                str(whisper),
+                str(model),
+                asr_backend=ASR_BACKEND_SAGA_2_M,
+                saga_model_path=str(saga),
+                language_code="da",
+            )
+
+            self.assertNotEqual(
+                transcription_cache.cache_key("dote_base", source, dote),
+                transcription_cache.cache_key("dote_base", source, saga_options),
+            )
 
 
 class MediaCommandTests(unittest.TestCase):
@@ -196,6 +265,7 @@ class PyannoteDiarizationTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "No complete local pyannote pipeline"):
                 run_pyannote_diarization(Path("sample.wav"), options, lambda _message: None, lambda: False)
 
+    @requires_pyannote_runtime
     def test_pyannote_diarization_targets_two_speakers_by_default(self) -> None:
         class FakePyannoteResult:
             def __init__(self, call_kwargs: dict[str, object]) -> None:
@@ -276,6 +346,7 @@ class PyannoteDiarizationTests(unittest.TestCase):
         self.assertTrue(any("Exact pyannote input:" in line for line in logs))
         self.assertTrue(any("num_speakers=2" in line for line in logs))
 
+    @requires_pyannote_runtime
     def test_pyannote_diarization_honors_known_speakers_hint(self) -> None:
         class FakePyannoteResult:
             def __init__(self, call_kwargs: dict[str, object]) -> None:
@@ -399,6 +470,7 @@ class PyannoteDiarizationTests(unittest.TestCase):
         self.assertTrue(any("Canonical pyannote audio:" in line for line in logs))
         self.assertTrue(any("Exact pyannote input:" in line for line in logs))
 
+    @requires_pyannote_runtime
     def test_pyannote_diarization_retries_with_wider_speaker_range_when_one_speaker_found(self) -> None:
         class FakePyannoteResult:
             def __init__(self, speaker_labels: tuple[str, ...]) -> None:
@@ -846,6 +918,7 @@ class PyannoteDiarizationTests(unittest.TestCase):
         lines = format_simple_jeffersonian(diarized, profile=BROAD_JEFFERSONIAN_PROFILE)
         self.assertEqual(lines[0].index("["), lines[1].index("["))
 
+    @requires_pyannote_runtime
     def test_pyannote_diarization_unwraps_diarizeoutput_wrapper(self) -> None:
         class FakeAnnotation:
             def __init__(self, turns: list[tuple[float, float, str]]) -> None:
@@ -900,6 +973,7 @@ class PyannoteDiarizationTests(unittest.TestCase):
         self.assertEqual(len(turns.overlap_turns), 1)
         self.assertTrue(any("pyannote raw output: FakeOutput" in line for line in logs))
 
+    @requires_pyannote_runtime
     def test_pyannote_diarization_falls_back_to_speaker_annotation_when_exclusive_is_empty(self) -> None:
         class FakeAnnotation:
             def __init__(self, turns: list[tuple[float, float, str]]) -> None:
@@ -3143,6 +3217,7 @@ class FFmpegRunnerProbeTests(unittest.TestCase):
 
 
 class DiarizationDiagnosticTests(unittest.TestCase):
+    @requires_pyannote_runtime
     def test_diagnostic_reports_canonical_audio_and_raw_speakers(self) -> None:
         class FakeAnnotation:
             def __init__(self, turns: list[tuple[float, float, str]]) -> None:
@@ -3228,6 +3303,7 @@ class DiarizationDiagnosticTests(unittest.TestCase):
         self.assertTrue(any("SPEAKER_00" in line for line in report.lines))
         self.assertTrue(any("SPEAKER_01" in line for line in report.lines))
 
+    @requires_pyannote_runtime
     def test_diagnostic_reports_failure_when_no_speaker_turns_returned(self) -> None:
         class EmptyAnnotation:
             def __len__(self) -> int:
