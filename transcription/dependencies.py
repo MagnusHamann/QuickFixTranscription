@@ -16,9 +16,18 @@ from transcription.dote_setup import (
     find_dote_executable,
     find_dote_whisper_executable,
 )
-from transcription.danish_whisper_setup import find_danish_whisper_model, danish_whisper_runtime_is_ready
 from transcription.mfa_presets import DEFAULT_MFA_PRESET_ID, mfa_preset_by_id
 from quickfix_sibling_apps import quickfix_app_roots
+
+try:
+    from transcription.danish_whisper_setup import find_danish_whisper_model, danish_whisper_runtime_is_ready
+except ModuleNotFoundError:
+    # A partial optional-backend update must not prevent the standard DOTE app from starting.
+    def find_danish_whisper_model() -> str | None:
+        return None
+
+    def danish_whisper_runtime_is_ready() -> bool:
+        return False
 
 
 DEPENDENCY_ROOT = quickfix_app_roots(PROJECT_ROOT)[0]

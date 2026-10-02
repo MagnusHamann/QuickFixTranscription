@@ -18,7 +18,6 @@ from transcription.models import (
     MediaRecord,
     TranscriptionOptions,
 )
-from transcription.danish_whisper_setup import danish_whisper_model_is_ready, danish_whisper_runtime_is_ready
 
 
 CLOUD_SYNC_MARKERS = {
@@ -161,10 +160,23 @@ def _check_dependencies(
     if not status.sherpa_onnx_ready:
         issues.append(PreflightIssue("error", "The pinned local sherpa-onnx runtime is missing."))
     if options.asr_backend == ASR_BACKEND_DANISH_WHISPER:
-        if not options.danish_model_path.strip() or not danish_whisper_model_is_ready(options.danish_model_path):
-            issues.append(PreflightIssue("error", "The selected local Røst v3 model folder is missing or incomplete."))
-        if not danish_whisper_runtime_is_ready():
-            issues.append(PreflightIssue("error", "The local Røst v3 Python runtime is incomplete."))
+        try:
+            from transcription.danish_whisper_setup import (
+                danish_whisper_model_is_ready,
+                danish_whisper_runtime_is_ready,
+            )
+        except ModuleNotFoundError:
+            issues.append(
+                PreflightIssue(
+                    "error",
+                    "Røst v3 support files are missing from this QuickFix installation. Run the latest QuickFix update or repair setup.",
+                )
+            )
+        else:
+            if not options.danish_model_path.strip() or not danish_whisper_model_is_ready(options.danish_model_path):
+                issues.append(PreflightIssue("error", "The selected local Røst v3 model folder is missing or incomplete."))
+            if not danish_whisper_runtime_is_ready():
+                issues.append(PreflightIssue("error", "The local Røst v3 Python runtime is incomplete."))
 
 
 def _check_cloud_locations(

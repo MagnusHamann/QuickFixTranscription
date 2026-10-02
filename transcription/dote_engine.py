@@ -1,4 +1,4 @@
-"""Integrated DOTE base transcription: diarization first, then per-turn Whisper."""
+"""Integrated DOTE transcription with general or Danish-specialized Whisper."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from collections.abc import Callable
 
 from transcription.dote_diarization import DoteDiarizer
 from transcription.engine import WhisperCppEngine
-from transcription.models import TranscriptResult, TranscriptSegment, WordToken
+from transcription.models import ASR_BACKEND_DANISH_WHISPER, ASR_BACKEND_DOTE_WHISPER, TranscriptResult, TranscriptSegment, WordToken
 from transcription.overlap_analysis import has_cross_speaker_overlap
 
 
@@ -110,17 +110,31 @@ class DoteWhisperEngine:
         prefer_gpu: bool = True,
         *,
         known_speakers: int = 0,
+        asr_backend: str = ASR_BACKEND_DOTE_WHISPER,
+        danish_model_path: str = "",
     ) -> None:
         self.executable = executable
         self.model_path = model_path
         self.prefer_gpu = prefer_gpu
+        self.asr_backend = asr_backend
         self.diarizer = DoteDiarizer(known_speakers=known_speakers)
         self.whisper: WhisperCppEngine | None = None
+        self.danish_whisper = None
+        if asr_backend == ASR_BACKEND_DANISH_WHISPER:
+            try:
+                from transcription.danish_whisper_engine import DanishWhisperBatchTranscriber
+            except ModuleNotFoundError as exc:
+                raise RuntimeError(
+                    "Røst v3 support files are missing from this QuickFix installation. Run the latest update or repair setup."
+                ) from exc
+            self.danish_whisper = DanishWhisperBatchTranscriber(danish_model_path, prefer_gpu)
 
     def terminate(self) -> None:
         self.diarizer.terminate()
         if self.whisper is not None:
             self.whisper.terminate()
+        if self.danish_whisper is not None:
+            self.danish_whisper.terminate()
 
     def transcribe(
         self,
@@ -137,23 +151,19 @@ class DoteWhisperEngine:
         if not turns:
             raise RuntimeError("DOTE did not produce speaker turns; ASR was not started.")
 
-        self.whisper = WhisperCppEngine(
-            self.executable,
-            self.model_path,
-            self.prefer_gpu,
-            no_context=True,
-        )
+        if self.danish_whisper is None:
+            self.whisper = WhisperCppEngine(
+                self.executable,
+                self.model_path,
+                self.prefer_gpu,
+                no_context=True,
+            )
         turn_root = work_dir / "dote_turns"
         if turn_root.exists():
             shutil.rmtree(turn_root, ignore_errors=True)
         turn_root.mkdir(parents=True, exist_ok=True)
 
-        output_segments: list[TranscriptSegment] = []
-        detected_language: str | None = language_code or None
-        log_callback(
-            "DOTE base pipeline: transcribing each diarized speaker turn with local whisper.cpp "
-            "and no cross-turn context."
-        )
+        turn_jobs: list[tuple[object, float, Path, Path]] = []
         for index, turn in enumerate(turns, start=1):
             if cancelled():
                 raise RuntimeError("DOTE transcription stopped by user.")
@@ -165,23 +175,55 @@ class DoteWhisperEngine:
             turn_work = turn_root / f"turn_{index:05d}_output"
             turn_work.mkdir(parents=True, exist_ok=True)
             _write_wav_slice(audio_path, slice_path, slice_start, slice_end)
+            turn_jobs.append((turn, slice_start, slice_path, turn_work))
+
+        if not turn_jobs:
+            raise RuntimeError("DOTE produced speaker turns, but none contained usable audio.")
+
+        danish_results: list[TranscriptResult] | None = None
+        if self.danish_whisper is not None:
+            danish_results = self.danish_whisper.transcribe(
+                [job[2] for job in turn_jobs],
+                turn_root,
+                log_callback,
+                cancelled,
+            )
+
+        output_segments: list[TranscriptSegment] = []
+        detected_language: str | None = "da" if self.asr_backend == ASR_BACKEND_DANISH_WHISPER else (language_code or None)
+        if self.asr_backend == ASR_BACKEND_DANISH_WHISPER:
+            log_callback(
+                "Røst v3 Danish text and word-timing pass complete."
+            )
+        else:
+            log_callback(
+                "DOTE base pipeline: transcribing each diarized speaker turn with local whisper.cpp "
+                "and no cross-turn context."
+            )
+        for index, (turn, slice_start, slice_path, turn_work) in enumerate(turn_jobs, start=1):
+            if cancelled():
+                raise RuntimeError("DOTE transcription stopped by user.")
             log_callback(
                 f"DOTE ASR turn {index}/{len(turns)}: {turn.speaker} "
                 f"{turn.start:.2f}-{turn.end:.2f}s"
             )
-            result = self.whisper.transcribe(
-                slice_path,
-                source_path,
-                turn_work,
-                language_code,
-                log_callback,
-                cancelled,
-            )
+            if danish_results is not None:
+                result = danish_results[index - 1]
+            else:
+                if self.whisper is None:
+                    raise RuntimeError("The local whisper.cpp engine was not initialized.")
+                result = self.whisper.transcribe(
+                    slice_path,
+                    source_path,
+                    turn_work,
+                    language_code,
+                    log_callback,
+                    cancelled,
+                )
             if result.language and not detected_language:
                 detected_language = result.language
-            output_segments.extend(
-                _segments_for_turn(result, slice_start, turn.start, turn.end, turn.speaker)
-            )
+            timing_segments = _segments_for_turn(result, slice_start, turn.start, turn.end, turn.speaker)
+            output_segments.extend(timing_segments)
 
         output_segments.sort(
             key=lambda segment: (
@@ -192,7 +234,8 @@ class DoteWhisperEngine:
             )
         )
         if not output_segments:
-            raise RuntimeError("DOTE diarization found speech, but whisper.cpp returned no usable transcript text.")
+            backend = "Røst v3" if self.asr_backend == ASR_BACKEND_DANISH_WHISPER else "whisper.cpp"
+            raise RuntimeError(f"DOTE diarization found speech, but {backend} returned no usable transcript text.")
 
         transcript = TranscriptResult(source_path, detected_language, output_segments)
         speakers = sorted({segment.speaker for segment in output_segments if segment.speaker})
