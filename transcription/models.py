@@ -12,6 +12,13 @@ from transcription.time_utils import validate_time_range
 VERBATIM_TRANSCRIPTION = "verbatim"
 BROAD_JEFFERSONIAN_TRANSCRIPTION = "broad_jeffersonian"
 NARROW_JEFFERSONIAN_TRANSCRIPTION = "narrow_jeffersonian"
+ASR_BACKEND_DOTE_WHISPER = "dote_whisper"
+ASR_BACKEND_DANISH_WHISPER = "danish_whisper"
+
+ASR_BACKEND_LABELS = {
+    ASR_BACKEND_DOTE_WHISPER: "DOTE Whisper (all languages)",
+    ASR_BACKEND_DANISH_WHISPER: "Røst v3 Danish Whisper",
+}
 
 TRANSCRIPTION_MODE_LABELS = {
     VERBATIM_TRANSCRIPTION: "Verbatim transcription",
@@ -97,6 +104,8 @@ class TranscriptResult:
 class TranscriptionOptions:
     whisper_executable: str
     model_path: str
+    asr_backend: str = ASR_BACKEND_DOTE_WHISPER
+    danish_model_path: str = ""
     transcription_mode: str = VERBATIM_TRANSCRIPTION
     language_code: str = ""
     transcribe_section: bool = False
@@ -139,6 +148,20 @@ class TranscriptionOptions:
 
     def validate(self) -> tuple[int | None, int | None]:
         mode = self.selected_mode()
+        if self.asr_backend not in ASR_BACKEND_LABELS:
+            raise ValueError("Choose a valid local speech-recognition engine.")
+        if self.asr_backend == ASR_BACKEND_DANISH_WHISPER:
+            if self.language_code not in {"", "da"}:
+                raise ValueError("Røst v3 supports Danish only. Choose Danish or Auto-detect.")
+            from transcription.danish_whisper_setup import (
+                danish_whisper_model_is_ready,
+                danish_whisper_runtime_is_ready,
+            )
+
+            if not self.danish_model_path.strip() or not danish_whisper_model_is_ready(self.danish_model_path):
+                raise ValueError("Choose or install a complete local Røst v3 model folder.")
+            if not danish_whisper_runtime_is_ready():
+                raise ValueError("The local Røst v3 runtime is not installed. Use Install Røst v3 in Advanced setup.")
         if not self.output_rtf and not self.output_json:
             raise ValueError("Select at least one output format: RTF or JSON.")
         if not self.whisper_executable.strip():
